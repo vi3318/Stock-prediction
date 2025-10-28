@@ -14,9 +14,6 @@ echo "Estimated time: 5-8 hours"
 echo "Start time: $(date)"
 echo ""
 
-# Navigate to project directory
-cd /Users/vidharia/Documents/Projects/dl
-
 ################################################################################
 # EXPERIMENT 1: Full Training with Optuna (2-4 hours)
 ################################################################################

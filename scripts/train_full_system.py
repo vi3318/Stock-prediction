@@ -80,25 +80,16 @@ class FullTrainingPipeline:
         logger.info("="*80 + "\n")
         
         # Initialize data manager
-        data_manager = EnhancedDataManager(
+        data_manager = EnhancedDataManager()
+        
+        # Collect comprehensive data
+        result = data_manager.collect_comprehensive_data(
             ticker=self.ticker,
-            api_key='demo'  # Use demo key for testing
+            days=self.days
         )
         
-        # Collect data
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=self.days + 365)  # Extra buffer
-        
-        logger.info(f"Collecting data from {start_date.date()} to {end_date.date()}")
-        
-        # Get stock data
-        stock_df = data_manager.get_enhanced_stock_data(
-            start_date=start_date.strftime('%Y-%m-%d'),
-            end_date=end_date.strftime('%Y-%m-%d')
-        )
-        
-        # Get news data
-        news_df = data_manager.get_news_data(days=self.days)
+        stock_df = result['stock_data']['stock']
+        news_df = result['news_data']['main']
         
         logger.info(f"Stock data collected: {len(stock_df)} rows")
         logger.info(f"News data collected: {len(news_df)} rows")
@@ -106,7 +97,20 @@ class FullTrainingPipeline:
         # Save raw data
         stock_df.to_csv(self.output_dir / 'stock_data.csv', index=False)
         news_df.to_csv(self.output_dir / 'news_data.csv', index=False)
-        
+        # Validate collected stock data before proceeding
+        if stock_df is None or len(stock_df) == 0:
+            logger.error(
+                "No stock data was collected. Aborting pipeline. "
+                "Check network connection, yfinance availability, or existing CSVs in data/raw/stocks/"
+            )
+            raise RuntimeError(f"No stock data collected for ticker: {self.ticker}")
+
+        required_cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+        missing = [c for c in required_cols if c not in stock_df.columns]
+        if missing:
+            logger.error(f"Stock data missing required columns: {missing}. Aborting pipeline.")
+            raise RuntimeError(f"Stock data missing required columns: {missing}")
+
         self.stock_df = stock_df
         self.news_df = news_df
         
@@ -169,7 +173,7 @@ class FullTrainingPipeline:
         
         # Get feature columns (exclude target and date columns)
         feature_cols = [c for c in clean_df.columns 
-                        if c not in ['target', 'date', 'Date', 'timestamp']]
+                        if c not in ['target', 'date', 'Date', 'timestamp', 'Ticker']]
         
         logger.info(f"Feature columns: {len(feature_cols)}")
         
@@ -291,11 +295,24 @@ class FullTrainingPipeline:
         logger.info("STEP 6: FINAL MODEL TRAINING")
         logger.info("="*80 + "\n")
         
+        # Separate model parameters from trainer parameters
+        model_params = {}
+        trainer_params = {}
+        
+        # Model-specific parameters
+        model_param_names = ['hidden_dim', 'num_layers', 'dropout', 'num_heads', 'temporal_decay_init']
+        
+        for key, value in self.best_params.items():
+            if key in model_param_names:
+                model_params[key] = value
+            else:
+                trainer_params[key] = value
+        
         # Create optimized model
         model = create_model(
             model_type='hybrid',
             num_features=self.num_features,
-            **self.best_params
+            **model_params
         )
         
         # Create trainer
@@ -311,7 +328,7 @@ class FullTrainingPipeline:
             self.y_train,
             self.X_val,
             self.y_val,
-            batch_size=self.best_params.get('batch_size', 32)
+            batch_size=trainer_params.get('batch_size', 32)
         )
         
         # Train with best hyperparameters
@@ -319,10 +336,10 @@ class FullTrainingPipeline:
             train_loader,
             val_loader,
             epochs=100,
-            learning_rate=self.best_params.get('learning_rate', 0.0005),
+            learning_rate=trainer_params.get('learning_rate', 0.0005),
             scheduler_type='plateau',
             early_stopping_patience=20,
-            grad_clip=self.best_params.get('grad_clip', 1.0)
+            grad_clip=trainer_params.get('grad_clip', 1.0)
         )
         
         self.final_trainer = trainer
@@ -419,7 +436,7 @@ class FullTrainingPipeline:
             logger.info(f"Final Accuracy:    {final_acc:.4f}")
             logger.info(f"Improvement:       {improvement_pct:.2f}%")
             logger.info(f"Absolute Gain:     {improvement_abs:.2f} percentage points")
-            logger.info(f"80% Target:        {'✅ ACHIEVED' if final_acc >= 0.80 else '❌ Not reached'}")
+            logger.info(f"80% Target:        {'ACHIEVED' if final_acc >= 0.80 else 'Not reached'}")
             logger.info(f"{'='*80}\n")
         
         # Save report
@@ -480,7 +497,7 @@ class FullTrainingPipeline:
 - **Final Accuracy:** {ia['final_accuracy']:.4f}
 - **Improvement:** {ia['improvement_percentage']:.2f}%
 - **Absolute Gain:** {ia['improvement_absolute']:.2f} percentage points
-- **80% Target:** {'✅ ACHIEVED' if ia['target_achieved'] else '❌ Not reached'}
+- **80% Target:** {'ACHIEVED' if ia['target_achieved'] else 'Not reached'}
 
 """
         
@@ -495,7 +512,7 @@ class FullTrainingPipeline:
 """
         
         if report['improvement_analysis'] and report['improvement_analysis']['target_achieved']:
-            md_content += "🎯 **Successfully achieved 80%+ accuracy target!**\n\n"
+            md_content += "**Successfully achieved 80%+ accuracy target!**\n\n"
         
         md_content += f"""The enhanced system demonstrates significant improvement over baseline models through:
 1. Advanced model architecture (Hybrid: FinBERT + BiLSTM + Attention)
@@ -562,7 +579,7 @@ For usage instructions, see `QUICKSTART.md` and `ENHANCED_SYSTEM_USAGE.md`.
             report = self.step8_generate_report()
             
             logger.info(f"\n{'='*80}")
-            logger.info("🎉 FULL PIPELINE COMPLETE!")
+            logger.info("FULL PIPELINE COMPLETE!")
             logger.info(f"{'='*80}\n")
             logger.info(f"Results saved to: {self.output_dir}")
             logger.info(f"Final test accuracy: {self.test_metrics['accuracy']:.4f}")

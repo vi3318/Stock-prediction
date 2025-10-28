@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 import logging
 from typing import List, Dict, Tuple, Optional
 import time
+import os
 from .collectors import StockDataCollector, NewsDataCollector
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,147 @@ class EnhancedStockDataCollector(StockDataCollector):
     
     def __init__(self):
         super().__init__()
+        self._setup_proxy()
+    
+    def _setup_proxy(self):
+        """Setup proxy settings from environment variables"""
+        self.proxy_settings = {}
+        
+        # Check for proxy environment variables
+        http_proxy = os.getenv('HTTP_PROXY') or os.getenv('http_proxy')
+        https_proxy = os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
+        
+        if http_proxy:
+            self.proxy_settings['http'] = http_proxy
+            self.logger.info(f"Using HTTP proxy: {http_proxy}")
+        
+        if https_proxy:
+            self.proxy_settings['https'] = https_proxy
+            self.logger.info(f"Using HTTPS proxy: {https_proxy}")
+        
+        if self.proxy_settings:
+            # Configure requests session with proxy
+            self.session = requests.Session()
+            self.session.proxies.update(self.proxy_settings)
+            # Set yfinance to use our session
+            yf.Ticker._session = self.session
+        else:
+            self.session = None
+    
+    def test_yfinance_connectivity(self, ticker: str = 'AAPL') -> bool:
+        """
+        Test yfinance connectivity and diagnose issues
+        
+        Args:
+            ticker: Test ticker symbol
+            
+        Returns:
+            True if connectivity works, False otherwise
+        """
+        self.logger.info(f"Testing yfinance connectivity with {ticker}...")
+        
+        try:
+            # Test basic ticker info
+            test_ticker = yf.Ticker(ticker)
+            info = test_ticker.info
+            
+            if info and 'regularMarketPrice' in info:
+                self.logger.info(f"✅ yfinance connectivity OK - {ticker} price: ${info['regularMarketPrice']:.2f}")
+                return True
+            else:
+                self.logger.warning(f"⚠️ yfinance returned empty info for {ticker}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"❌ yfinance connectivity failed: {e}")
+            
+            # Provide troubleshooting guidance
+            if "Expecting value: line 1 column 1" in str(e):
+                self.logger.error("This error suggests network/proxy/firewall issues:")
+                self.logger.error("  - Check if you're behind a corporate proxy/firewall")
+                self.logger.error("  - Set HTTP_PROXY and HTTPS_PROXY environment variables")
+                self.logger.error("  - Example: set HTTP_PROXY=http://proxy.company.com:8080")
+                self.logger.error("  - Example: set HTTPS_PROXY=http://proxy.company.com:8080")
+            elif "No timezone found" in str(e):
+                self.logger.error("This suggests the ticker may be delisted or invalid")
+                self.logger.error("  - Verify the ticker symbol is correct")
+                self.logger.error("  - Try a different ticker like 'MSFT' or 'GOOGL'")
+            
+            return False
+    
+    def fetch_stock_data(
+        self, 
+        ticker: str, 
+        start_date: str, 
+        end_date: str
+    ) -> pd.DataFrame:
+        """
+        Enhanced fetch_stock_data with proxy support and error handling
+        
+        Args:
+            ticker: Stock ticker symbol
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            
+        Returns:
+            DataFrame with OHLCV data
+        """
+        try:
+            self.logger.info(f"Fetching stock data for {ticker} from {start_date} to {end_date}")
+            
+            # Use proxy-aware session if configured
+            if self.session:
+                # Temporarily set yfinance session
+                original_session = yf.Ticker._session
+                yf.Ticker._session = self.session
+            
+            stock = yf.Ticker(ticker)
+            df = stock.history(start=start_date, end=end_date)
+            
+            # Restore original session
+            if self.session:
+                yf.Ticker._session = original_session
+            
+            if df.empty:
+                self.logger.warning(f"No data found for {ticker}")
+                return pd.DataFrame()
+            
+            # Add ticker column
+            df['Ticker'] = ticker
+            df.reset_index(inplace=True)
+            
+            # Rename Date column for consistency
+            if 'Date' not in df.columns and df.index.name == 'Date':
+                df.reset_index(inplace=True)
+            if 'Date' not in df.columns:
+                df['Date'] = df.index
+                df.reset_index(drop=True, inplace=True)
+            
+            # Calculate additional features
+            df['Returns'] = df['Close'].pct_change()
+            df['Log_Returns'] = np.log(df['Close'] / df['Close'].shift(1))
+            df['Volatility'] = df['Returns'].rolling(window=20).std()
+            df['Volume_Change'] = df['Volume'].pct_change()
+            
+            self.logger.info(f"Successfully fetched {len(df)} records for {ticker}")
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching data for {ticker}: {str(e)}")
+            
+            # Try fallback: check for cached data
+            cached_path = f"data/raw/stocks/{ticker}_stock_data_extended.csv"
+            if os.path.exists(cached_path):
+                self.logger.info(f"Attempting to load cached data from {cached_path}")
+                try:
+                    cached_df = pd.read_csv(cached_path)
+                    if not cached_df.empty and len(cached_df) > 0:
+                        self.logger.info(f"✅ Loaded {len(cached_df)} records from cache")
+                        return cached_df
+                except Exception as cache_e:
+                    self.logger.error(f"Failed to load cached data: {cache_e}")
+            
+            return pd.DataFrame()
     
     def fetch_extended_stock_data(
         self,
@@ -506,6 +648,15 @@ class EnhancedDataManager:
         self.logger.info(f"# Period: {start_date} to {end_date}")
         self.logger.info(f"# Target Days: {days}")
         self.logger.info(f"{'#'*70}\n")
+        
+        # Test connectivity first
+        self.logger.info("Testing yfinance connectivity...")
+        connectivity_ok = self.stock_collector.test_yfinance_connectivity(ticker)
+        
+        if not connectivity_ok:
+            self.logger.warning("yfinance connectivity test failed!")
+            self.logger.warning("Will attempt data collection anyway, but it may fail.")
+            self.logger.warning("If collection fails, check proxy settings or use cached data.")
         
         # Collect all stock/market data
         stock_data = self.stock_collector.fetch_all_data(

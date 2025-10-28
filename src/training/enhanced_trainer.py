@@ -35,12 +35,57 @@ class EnhancedTrainer:
             device: 'cpu' or 'cuda'
             output_dir: Directory to save models and logs
         """
-        self.model = model.to(device)
+        # Initialize logger first
+        self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # Handle CUDA device initialization more gracefully
+        if device == 'cuda':
+            if not torch.cuda.is_available():
+                self.logger.warning("CUDA requested but not available. Falling back to CPU.")
+                device = 'cpu'
+            else:
+                try:
+                    # Test CUDA device
+                    torch.cuda.init()
+                    torch.cuda.empty_cache()
+                    self.logger.info(f"CUDA initialized successfully. Device: {torch.cuda.get_device_name()}")
+                except Exception as e:
+                    self.logger.error(f"CUDA initialization failed: {e}. Falling back to CPU.")
+                    device = 'cpu'
+        
         self.device = device
+        
+        # Move model to device with error handling
+        try:
+            self.model = model.to(device)
+            self.logger.info(f"Model moved to device: {device}")
+        except RuntimeError as e:
+            if 'CachingAllocator' in str(e):
+                self.logger.error(f"CUDA memory allocator error: {e}")
+                self.logger.error("This may be caused by incompatible CUDA environment variables.")
+                self.logger.error("Try unsetting PYTORCH_CUDA_ALLOC_CONF or CUDA-related environment variables.")
+                raise
+            else:
+                raise
+        
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        self.logger = logging.getLogger(self.__class__.__name__)
+        # Training history
+        self.history = {
+            'train_loss': [],
+            'train_acc': [],
+            'val_loss': [],
+            'val_acc': [],
+            'val_precision': [],
+            'val_recall': [],
+            'val_f1': [],
+            'learning_rates': []
+        }
+        
+        # Best model tracking
+        self.best_val_acc = 0.0
+        self.best_model_path = None
         
         # Training history
         self.history = {

@@ -1,20 +1,49 @@
 # Stock Price Prediction with Deep Learning & NLP
 
+## 🚀 Windows 11 Quick Start (Dell G16 RTX 3070)
+
+**NEW: Optimized for Windows 11 with GPU support!**
+
+1. **Automated Setup (10 minutes)**
+
+   ```powershell
+   .\WINDOWS_QUICK_SETUP.bat
+   ```
+
+   This will create virtual environment, install CUDA-enabled PyTorch, and all dependencies.
+
+2. **Activate Environment**
+
+   ```powershell
+   .\activate_venv.bat
+   ```
+
+3. **Run All Experiments (5-8 hours)**
+   ```powershell
+   .\RUN_EXPERIMENTS.bat
+   ```
+
+📖 **See [WINDOWS_GPU_SETUP.md](WINDOWS_GPU_SETUP.md) for complete guide, GPU configuration, and troubleshooting.**
+
+---
+
 ## 🎯 Performance
 
 **Current System Accuracy: 80-85%** ✅
 
-| Model | Accuracy | F1 Score | Training Time |
-|-------|----------|----------|---------------|
-| Random Forest (Baseline) | 58-62% | 0.60 | 1 min |
-| Basic LSTM | 60-65% | 0.62 | 5 min |
-| BiLSTM + Attention | 68-72% | 0.70 | 10 min |
-| Transformer | 70-74% | 0.72 | 15 min |
-| **Hybrid (FinBERT+BiLSTM)** | **75-80%** | **0.78** | 20 min |
-| **Hybrid + Optuna** | **80-85%** ✨ | **0.82** | 2-4 hours |
+| Model                       | Accuracy      | F1 Score | Training Time |
+| --------------------------- | ------------- | -------- | ------------- |
+| Random Forest (Baseline)    | 58-62%        | 0.60     | 1 min         |
+| Basic LSTM                  | 60-65%        | 0.62     | 5 min         |
+| BiLSTM + Attention          | 68-72%        | 0.70     | 10 min        |
+| Transformer                 | 70-74%        | 0.72     | 15 min        |
+| **Hybrid (FinBERT+BiLSTM)** | **75-80%**    | **0.78** | 20 min        |
+| **Hybrid + Optuna**         | **80-85%** ✨ | **0.82** | 2-4 hours     |
 
 ## Project Overview
+
 A production-ready deep learning system that predicts stock price movements by combining:
+
 - **Advanced NLP**: FinBERT sentiment analysis + temporal news modeling
 - **1000+ Days Data**: Extended historical context with market/competitor/macro indicators
 - **80-100 Features**: Comprehensive feature engineering (momentum, volatility, correlations)
@@ -22,6 +51,7 @@ A production-ready deep learning system that predicts stock price movements by c
 - **Hyperparameter Optimization**: Automated tuning with Optuna (50-100 trials)
 
 ## Novel Contributions
+
 1. **Hybrid Model Architecture** 🆕: FinBERT + BiLSTM + Cross-modal Attention + Learnable Temporal Weights
 2. **Extended Context**: 120-day sequences with 1000+ days training data
 3. **Comprehensive Features**: 80-100 features across 8 categories (momentum, volatility, market correlation, etc.)
@@ -34,6 +64,7 @@ A production-ready deep learning system that predicts stock price movements by c
 10. **Automated Reporting**: Publication-ready LaTeX tables and comprehensive result aggregation
 
 ## Project Structure
+
 ```
 dl/
 ├── data/
@@ -65,12 +96,14 @@ dl/
 ## Installation
 
 1. Create a virtual environment:
+
 ```bash
 python -m venv venv
 source venv/bin/activate  # On macOS/Linux
 ```
 
 2. Install dependencies:
+
 ```bash
 pip install -r requirements.txt
 pip install optuna plotly  # For hyperparameter optimization
@@ -78,6 +111,7 @@ python -m spacy download en_core_web_sm
 ```
 
 3. Set up environment variables (optional, for live data):
+
 ```
 NEWS_API_KEY=your_newsapi_key
 ALPHA_VANTAGE_KEY=your_alpha_vantage_key
@@ -152,11 +186,13 @@ print(f"Test Accuracy: {metrics['accuracy']:.4f}")
 ## Usage (Advanced)
 
 ### 1. Data Collection
+
 ```bash
 python main.py --mode collect --tickers AAPL MSFT GOOGL --start-date 2022-01-01 --end-date 2023-12-31
 ```
 
 ### 2. Training
+
 ```bash
 python main.py --mode train --config configs/training_config.yaml
 ```
@@ -164,11 +200,13 @@ python main.py --mode train --config configs/training_config.yaml
 ### 3. Evaluation
 
 #### Standard Holdout Evaluation
+
 ```bash
 python main.py --mode evaluate --model-path models/saved_models/best_model.h5
 ```
 
 #### Walk-Forward Cross-Validation (Recommended)
+
 ```bash
 # Expanding window (training set grows)
 python main.py --mode evaluate --walk-forward --window-type expanding --max-folds 5
@@ -178,6 +216,7 @@ python main.py --mode evaluate --walk-forward --window-type sliding --max-folds 
 ```
 
 #### Multi-Sector Evaluation (Test Generalization)
+
 ```bash
 # Evaluate specific sectors
 python main.py --mode evaluate --multi-sector --sectors technology financial
@@ -187,6 +226,7 @@ python main.py --mode evaluate --multi-sector --sectors all
 ```
 
 #### Run Examples
+
 ```bash
 # Walk-forward validation with synthetic data
 python examples/walk_forward_example.py
@@ -205,6 +245,7 @@ python examples/learnable_weights_example.py
 ```
 
 ### 5. Explainability & Analysis
+
 ```bash
 # View temporal heatmaps and event contributions
 python examples/explainability_example.py
@@ -214,6 +255,7 @@ python examples/reporting_example.py
 ```
 
 ### 4. Dashboard
+
 ```bash
 streamlit run dashboard/app.py
 ```
@@ -221,17 +263,20 @@ streamlit run dashboard/app.py
 ## Model Architecture
 
 ### Hybrid Late Fusion Model
+
 - **Text Branch**: FinBERT → BiLSTM → Attention → Dense
 - **Numerical Branch**: Technical Indicators → GRU → Dense
 - **Fusion Layer**: Concatenate → Dense → Dropout → Output
 
 ### Key Features
+
 - Multi-head attention for news event importance
 - Temporal decay weighting for news relevance
 - Entity and relation extraction for contextual understanding
 - Dynamic fusion weights based on market volatility
 
 ## Datasets
+
 - **News**: NewsAPI, Yahoo Finance News, Financial Times
 - **Prices**: Yahoo Finance (yfinance)
 - **Volume**: 100K+ news articles, 5+ years of stock data
@@ -239,23 +284,29 @@ streamlit run dashboard/app.py
 ## Evaluation Metrics
 
 ### Classification Metrics
+
 - Accuracy, Precision, Recall, F1-Score
 - Per-class performance analysis
 - Confusion matrix visualization
 
-### Regression Metrics  
+### Regression Metrics
+
 - RMSE, MAPE, MAE
 - Directional accuracy
 
 ### Walk-Forward Cross-Validation
+
 Our robust evaluation uses **walk-forward cross-validation**, the gold standard for time series:
+
 - **Expanding Window**: Training set grows over time (simulates real deployment)
 - **Sliding Window**: Fixed training window moves forward (tests on recent data)
 - **Per-fold metrics**: Accuracy, F1, Sharpe, CAGR with 95% confidence intervals
 - **No lookahead bias**: Strict temporal ordering guaranteed
 
 ### Enhanced Backtesting
+
 Realistic trading simulation with:
+
 - Transaction costs (0.2% bid-ask spread + commission)
 - Slippage modeling (0.1% market impact)
 - 1-day execution delay
@@ -264,7 +315,9 @@ Realistic trading simulation with:
 - Risk-adjusted metrics: Sharpe, Sortino, Max Drawdown, CAGR, Win Rate
 
 ### Multi-Sector Evaluation
+
 Tests model generalization across 5 diverse market sectors:
+
 - **Technology**: AAPL, MSFT, GOOGL, NVDA
 - **Financial**: JPM, BAC, WFC, GS
 - **Healthcare**: JNJ, UNH, PFE, ABBV
@@ -272,33 +325,38 @@ Tests model generalization across 5 diverse market sectors:
 - **Consumer**: WMT, COST, HD, MCD
 
 Features:
+
 - Cross-sector statistical significance tests
 - Sector-specific learned weight comparisons
 - Generalization coefficient of variation (CV) analysis
 - 4-panel visualization (accuracy, Sharpe, risk-return, distribution)
 
 ## Results (Sample)
-| Model | Accuracy | F1-Score | Sharpe Ratio |
-|-------|----------|----------|--------------|
-| Baseline (Sentiment Only) | 54.2% | 0.52 | 0.31 |
-| Our Model (Late Fusion) | 67.8% | 0.66 | 1.24 |
+
+| Model                     | Accuracy | F1-Score | Sharpe Ratio |
+| ------------------------- | -------- | -------- | ------------ |
+| Baseline (Sentiment Only) | 54.2%    | 0.52     | 0.31         |
+| Our Model (Late Fusion)   | 67.8%    | 0.66     | 1.24         |
 
 ### Multi-Sector Performance
-| Sector | Accuracy | Sharpe | CAGR |
-|--------|----------|--------|------|
-| Technology | 68.5% ± 2.3% | 1.28 ± 0.15 | 19.2% ± 4.1% |
-| Financial | 63.2% ± 3.1% | 1.05 ± 0.22 | 14.5% ± 5.3% |
-| Healthcare | 66.1% ± 2.7% | 1.18 ± 0.18 | 17.3% ± 4.7% |
+
+| Sector              | Accuracy     | Sharpe      | CAGR         |
+| ------------------- | ------------ | ----------- | ------------ |
+| Technology          | 68.5% ± 2.3% | 1.28 ± 0.15 | 19.2% ± 4.1% |
+| Financial           | 63.2% ± 3.1% | 1.05 ± 0.22 | 14.5% ± 5.3% |
+| Healthcare          | 66.1% ± 2.7% | 1.18 ± 0.18 | 17.3% ± 4.7% |
 | Overall (5 sectors) | 65.9% ± 2.8% | 1.15 ± 0.19 | 16.8% ± 4.9% |
 
 ## Quick Start
 
 **First time? Run this:**
+
 ```bash
 python QUICKSTART.py
 ```
 
 **Try the examples:**
+
 ```bash
 # Ablation study (what components matter?)
 python examples/ablation_study_example.py
@@ -321,6 +379,7 @@ python examples/explainability_example.py
 ## Publication Support
 
 This system is **publication-ready** with:
+
 - Walk-forward cross-validation (gold standard)
 - Statistical significance testing (10,000+ bootstrap)
 - 95% confidence intervals
@@ -329,22 +388,27 @@ This system is **publication-ready** with:
 - Automated LaTeX table generation
 
 **Generate publication tables:**
+
 ```bash
 python -m src.reporting.automated_reports
 # Output: results/reports/table_*.tex
 ```
 
 **Include in your paper:**
+
 ```latex
 \input{results/reports/table_metrics.tex}
 \input{results/reports/table_ablation.tex}
 ```
 
 ## Research Paper
+
 The full research paper draft is available in `research_paper/paper.tex`
 
 ## License
+
 MIT License
 
 ## Contact
+
 For questions or collaboration, please open an issue.

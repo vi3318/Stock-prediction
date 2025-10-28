@@ -206,8 +206,8 @@ def test_core_imports():
         from data_collection.collectors import StockDataCollector
         print_success("StockDataCollector import")
         
-        from preprocessing.nlp_processor import NLPPipeline  
-        print_success("NLPPipeline import")
+        from preprocessing.nlp_processor import NewsProcessor  
+        print_success("NewsProcessor import")
         
         # Skip model imports for now since they may need config
         print_success("Core preprocessing modules import successfully")

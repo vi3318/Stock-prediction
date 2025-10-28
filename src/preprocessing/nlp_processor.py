@@ -394,7 +394,7 @@ class FinancialTextEmbedder:
         return embeddings, sentiments
 
 
-class NLPPipeline:
+class NewsProcessor:
     """Complete NLP processing pipeline"""
     
     def __init__(self, config: Dict):
@@ -458,7 +458,7 @@ if __name__ == "__main__":
     # Example usage
     logging.basicConfig(level=logging.INFO)
     
-    pipeline = NLPPipeline({'nlp': {'model_name': 'ProsusAI/finbert'}})
+    pipeline = NewsProcessor({'nlp': {'model_name': 'ProsusAI/finbert'}})
     
     sample_df = pd.DataFrame({
         'title': ['Apple reports record earnings', 'Tesla faces lawsuit'],

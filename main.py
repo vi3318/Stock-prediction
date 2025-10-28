@@ -148,7 +148,7 @@ def main():
             logger.info("Starting data preprocessing...")
             
             # Import preprocessing modules
-            from preprocessing.nlp_processor import NLPPipeline
+            from preprocessing.nlp_processor import NewsProcessor
             from features.numerical_features import NumericalFeaturePipeline
             from features.temporal_features import TemporalFeatureEngineer
             

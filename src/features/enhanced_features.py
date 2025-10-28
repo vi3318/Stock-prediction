@@ -399,7 +399,21 @@ class EnhancedNumericalFeatures:
         self.logger.info("CREATING ENHANCED NUMERICAL FEATURES")
         self.logger.info(f"{'='*60}\n")
         
+        # Validate required OHLCV columns before computing indicators
+        required_cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+        missing_cols = [c for c in required_cols if c not in stock_df.columns]
+        if missing_cols:
+            msg = ("Missing required OHLCV columns for feature engineering: "
+                   f"{missing_cols}. Ensure data collection succeeded and that the stock DataFrame\n"
+                   "contains Date, Open, High, Low, Close, Volume columns (case-sensitive).")
+            self.logger.error(msg)
+            raise ValueError(msg)
+
+        # Copy and ensure Returns exists (many indicators expect Returns)
         df = stock_df.copy()
+        if 'Returns' not in df.columns and 'Close' in df.columns:
+            self.logger.info("'Returns' column not found — computing from 'Close' via pct_change()")
+            df['Returns'] = df['Close'].pct_change()
         initial_features = len(df.columns)
         
         # Add momentum indicators
