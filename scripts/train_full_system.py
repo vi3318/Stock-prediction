@@ -255,14 +255,37 @@ class FullTrainingPipeline:
         logger.info("STEP 5: HYPERPARAMETER OPTIMIZATION")
         logger.info("="*80 + "\n")
         
-        # Use hybrid model (best architecture)
-        logger.info("Optimizing Hybrid model...")
+        # Find best model from comparison (excluding sklearn baselines)
+        dl_models = {k: v for k, v in self.comparison_results.items() 
+                     if k not in ['random_forest', 'logistic_regression']}
+        
+        if not dl_models:
+            logger.warning("No deep learning models to optimize, using hybrid model")
+            best_model_name = 'hybrid'
+        else:
+            # Find best DL model by F1 score (more robust than accuracy for imbalanced data)
+            best_model_name = max(dl_models.items(), key=lambda x: x[1].get('f1', 0))[0]
+            best_f1 = dl_models[best_model_name]['f1']
+            
+            logger.info(f"Best performing DL model from comparison: {best_model_name}")
+            logger.info(f"F1 Score: {best_f1:.4f}")
+            
+            # Map comparison names to model types
+            model_type_map = {
+                'baseline_lstm': 'baseline',
+                'enhanced_bilstm': 'bilstm',
+                'enhanced_transformer': 'transformer',
+                'enhanced_hybrid': 'hybrid'
+            }
+            best_model_name = model_type_map.get(best_model_name, 'hybrid')
+        
+        logger.info(f"Optimizing {best_model_name} model...")
         
         optimizer = HyperparameterOptimizer(
-            model_type='hybrid',
+            model_type=best_model_name,
             num_features=self.num_features,
             device=self.device,
-            study_name=f'{self.ticker}_hybrid_optimization'
+            study_name=f'{self.ticker}_{best_model_name}_optimization'
         )
         
         # Set data
@@ -280,6 +303,7 @@ class FullTrainingPipeline:
         optimizer.save_results(str(self.output_dir / 'optimization'))
         
         self.best_params = best_params
+        self.best_model_type = best_model_name
         
         logger.info(f"\nBest hyperparameters:")
         for key, value in best_params.items():
@@ -300,7 +324,7 @@ class FullTrainingPipeline:
         trainer_params = {}
         
         # Model-specific parameters
-        model_param_names = ['hidden_dim', 'num_layers', 'dropout', 'num_heads', 'temporal_decay_init']
+        model_param_names = ['hidden_dim', 'num_layers', 'dropout', 'num_heads', 'temporal_decay_init', 'd_model', 'nhead', 'dim_feedforward']
         
         for key, value in self.best_params.items():
             if key in model_param_names:
@@ -308,9 +332,13 @@ class FullTrainingPipeline:
             else:
                 trainer_params[key] = value
         
+        # Use the best model type from optimization
+        model_type = getattr(self, 'best_model_type', 'hybrid')
+        logger.info(f"Training final {model_type} model with optimized parameters...")
+        
         # Create optimized model
         model = create_model(
-            model_type='hybrid',
+            model_type=model_type,
             num_features=self.num_features,
             **model_params
         )
@@ -567,6 +595,7 @@ For usage instructions, see `QUICKSTART.md` and `ENHANCED_SYSTEM_USAGE.md`.
                     'num_heads': 8,
                     'temporal_decay_init': 0.95
                 }
+                self.best_model_type = 'bilstm'  # Default to BiLSTM (simpler than hybrid)
                 logger.info("Using default hyperparameters (optimization skipped)")
             
             # Step 6: Train final model

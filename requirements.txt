@@ -1,7 +1,7 @@
 # Core Deep Learning and NLP
 tensorflow>=2.17.0
-torch>=2.4.0
-transformers>=4.30.0
+torch>=2.7.0  # Required for security (CVE-2025-32434) and FinBERT compatibility
+transformers>=4.57.0  # Required for FinBERT with trust_remote_code
 sentence-transformers>=2.2.2
 
 # Financial Data

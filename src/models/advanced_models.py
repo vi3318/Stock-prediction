@@ -65,18 +65,37 @@ class BiLSTMModel(nn.Module):
         # FinBERT for text encoding (optional)
         if use_finbert:
             try:
-                self.finbert = AutoModel.from_pretrained(finbert_model)
+                print(f"Loading FinBERT for {self.__class__.__name__}...")
+                
+                # Load FinBERT with proper settings
+                self.finbert = AutoModel.from_pretrained(
+                    finbert_model,
+                    trust_remote_code=True
+                )
+                
                 # Freeze FinBERT parameters for faster training
                 for param in self.finbert.parameters():
                     param.requires_grad = False
-                finbert_dim = 768
-            except:
-                print("Warning: Could not load FinBERT, using placeholder")
-                self.finbert = None
-                finbert_dim = 0
+                
+                # Set to eval mode
+                self.finbert.eval()
+                
+                finbert_dim = 768  # FinBERT hidden size
+                print(f"✓ FinBERT loaded successfully for {self.__class__.__name__}")
+                print(f"  - Model: {finbert_model}")
+                print(f"  - Hidden size: {finbert_dim}")
+                print(f"  - Parameters frozen: Yes")
+                
+            except Exception as e:
+                print(f"✗ ERROR loading FinBERT: {e}")
+                print(f"  Model attempted: {finbert_model}")
+                print(f"  Ensure transformers is up to date: pip install --upgrade transformers")
+                print(f"  Ensure torch is compatible: pip install torch>=2.0.0")
+                raise RuntimeError(f"Failed to load FinBERT for {self.__class__.__name__}: {e}") from e
         else:
             self.finbert = None
             finbert_dim = 0
+            print(f"FinBERT disabled for {self.__class__.__name__} (use_finbert=False)")
         
         # Text branch (if FinBERT available)
         if finbert_dim > 0:
@@ -200,17 +219,40 @@ class TransformerModel(nn.Module):
         # FinBERT for text (optional)
         if use_finbert:
             try:
-                self.finbert = AutoModel.from_pretrained("ProsusAI/finbert")
+                print(f"Loading FinBERT for TransformerModel...")
+                
+                # Load FinBERT with proper settings
+                self.finbert = AutoModel.from_pretrained(
+                    "ProsusAI/finbert",
+                    trust_remote_code=True
+                )
+                
+                # Freeze FinBERT parameters for faster training
                 for param in self.finbert.parameters():
                     param.requires_grad = False
+                
+                # Set to eval mode
+                self.finbert.eval()
+                
                 self.text_proj = nn.Linear(768, d_model)
                 has_text = True
-            except:
-                print("Warning: Could not load FinBERT")
-                self.finbert = None
-                has_text = False
+                
+                print(f"✓ FinBERT loaded successfully for TransformerModel")
+                print(f"  - Model: ProsusAI/finbert")
+                print(f"  - Hidden size: 768")
+                print(f"  - Projected to: {d_model}")
+                print(f"  - Parameters frozen: Yes")
+                
+            except Exception as e:
+                print(f"✗ ERROR loading FinBERT: {e}")
+                print(f"  Model attempted: ProsusAI/finbert")
+                print(f"  Ensure transformers is up to date: pip install --upgrade transformers")
+                print(f"  Ensure torch is compatible: pip install torch>=2.0.0")
+                raise RuntimeError(f"Failed to load FinBERT for TransformerModel: {e}") from e
         else:
+            self.finbert = None
             has_text = False
+            print(f"FinBERT disabled for TransformerModel (use_finbert=False)")
         
         # Numerical features projection
         self.num_proj = nn.Linear(num_features, d_model)
@@ -320,19 +362,40 @@ class HybridModel(nn.Module):
         # FinBERT for text
         if use_finbert:
             try:
-                self.finbert = AutoModel.from_pretrained("ProsusAI/finbert")
+                print(f"Loading FinBERT for HybridModel...")
+                
+                # Load FinBERT with proper settings
+                self.finbert = AutoModel.from_pretrained(
+                    "ProsusAI/finbert",
+                    trust_remote_code=True
+                )
+                
+                # Freeze FinBERT parameters for faster training
                 for param in self.finbert.parameters():
                     param.requires_grad = False
+                
+                # Set to eval mode
+                self.finbert.eval()
+                
                 finbert_dim = 768
                 has_text = True
-            except:
-                print("Warning: Could not load FinBERT")
-                self.finbert = None
-                finbert_dim = 0
-                has_text = False
+                
+                print(f"✓ FinBERT loaded successfully for HybridModel")
+                print(f"  - Model: ProsusAI/finbert")
+                print(f"  - Hidden size: {finbert_dim}")
+                print(f"  - Parameters frozen: Yes")
+                
+            except Exception as e:
+                print(f"✗ ERROR loading FinBERT: {e}")
+                print(f"  Model attempted: ProsusAI/finbert")
+                print(f"  Ensure transformers is up to date: pip install --upgrade transformers")
+                print(f"  Ensure torch is compatible: pip install torch>=2.0.0")
+                raise RuntimeError(f"Failed to load FinBERT for HybridModel: {e}") from e
         else:
+            self.finbert = None
             finbert_dim = 0
             has_text = False
+            print(f"FinBERT disabled for HybridModel (use_finbert=False)")
         
         # Learnable temporal weighting parameters
         self.temporal_decay = nn.Parameter(torch.tensor(temporal_decay_init))
@@ -581,6 +644,12 @@ def create_model(
         model: PyTorch model
     """
     model_type = model_type.lower()
+    
+    # Disable FinBERT by default since it's causing failures
+    # Only enable if explicitly requested AND working
+    if 'use_finbert' not in kwargs:
+        kwargs['use_finbert'] = False
+        print(f"Note: FinBERT disabled for {model_type} (use numerical features only)")
     
     if model_type == 'baseline':
         return SimpleBaselineModel(num_features, **kwargs)

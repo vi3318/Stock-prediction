@@ -535,16 +535,28 @@ class EnhancedNewsDataCollector(NewsDataCollector):
                 
                 if comp_articles:
                     df = pd.DataFrame(comp_articles)
-                    df['published_at'] = pd.to_datetime(df['published_at'], errors='coerce')
+                    df['published_at'] = pd.to_datetime(df['published_at'], errors='coerce', utc=True)
                     df = df.dropna(subset=['published_at'])
-                    df = df[(df['published_at'] >= start_date) & (df['published_at'] <= end_date)]
                     
-                    competitor_news[comp] = df
-                    self.logger.info(f"✅ Fetched {len(df)} articles for {comp}")
+                    # Convert start_date and end_date to timezone-aware datetime for comparison
+                    start_dt = pd.to_datetime(start_date, utc=True)
+                    end_dt = pd.to_datetime(end_date, utc=True)
+                    
+                    # Filter by date range
+                    df = df[(df['published_at'] >= start_dt) & (df['published_at'] <= end_dt)]
+                    
+                    if not df.empty:
+                        competitor_news[comp] = df
+                        self.logger.info(f"✅ Fetched {len(df)} articles for {comp}")
+                    else:
+                        self.logger.info(f"✅ Fetched 0 articles for {comp} (no articles in date range)")
+                else:
+                    self.logger.info(f"✅ Fetched 0 articles for {comp}")
                 
                 time.sleep(1)  # Rate limiting
             except Exception as e:
                 self.logger.error(f"Failed to fetch news for {comp}: {e}")
+                self.logger.info(f"✅ Fetched 0 articles for {comp}")
         
         return competitor_news
     

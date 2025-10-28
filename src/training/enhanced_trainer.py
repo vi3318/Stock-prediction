@@ -226,8 +226,27 @@ class EnhancedTrainer:
         else:
             scheduler = None
         
-        # Loss function
-        criterion = nn.CrossEntropyLoss()
+        # Loss function with class weighting for imbalanced data
+        # Calculate class weights from training data
+        train_labels = []
+        for _, batch_y in train_loader:
+            train_labels.extend(batch_y.cpu().numpy())
+        train_labels = np.array(train_labels)
+        
+        # Count classes
+        class_counts = np.bincount(train_labels)
+        total_samples = len(train_labels)
+        
+        # Calculate weights: higher weight for minority class
+        class_weights = torch.FloatTensor([
+            total_samples / (2 * class_counts[0]),
+            total_samples / (2 * class_counts[1])
+        ]).to(self.device)
+        
+        self.logger.info(f"Class distribution: Class 0: {class_counts[0]}, Class 1: {class_counts[1]}")
+        self.logger.info(f"Class weights: {class_weights.cpu().numpy()}")
+        
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
         
         # Early stopping
         best_val_acc = 0.0

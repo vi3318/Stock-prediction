@@ -296,16 +296,57 @@ class FinancialTextEmbedder:
         self.logger = logging.getLogger(self.__class__.__name__)
         
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.model = AutoModel.from_pretrained(model_name)
-            self.sentiment_model = AutoModelForSequenceClassification.from_pretrained(model_name)
-            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            # FinBERT requires specific trust settings and proper device handling
+            self.logger.info(f"Loading FinBERT model: {model_name}")
+            
+            # Load tokenizer with proper settings
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                do_lower_case=True,
+                trust_remote_code=True
+            )
+            
+            # Load base model for embeddings
+            self.model = AutoModel.from_pretrained(
+                model_name,
+                trust_remote_code=True
+            )
+            
+            # Load sentiment classification model (same model, different head)
+            self.sentiment_model = AutoModelForSequenceClassification.from_pretrained(
+                model_name,
+                num_labels=3,  # FinBERT outputs: negative, neutral, positive
+                trust_remote_code=True
+            )
+            
+            # Device setup with proper error handling
+            if torch.cuda.is_available():
+                self.device = torch.device('cuda')
+                # Clear cache before loading
+                torch.cuda.empty_cache()
+            else:
+                self.device = torch.device('cpu')
+                self.logger.warning("CUDA not available, using CPU for FinBERT (slower)")
+            
+            # Move models to device
             self.model.to(self.device)
             self.sentiment_model.to(self.device)
-            self.logger.info(f"Loaded model {model_name} on {self.device}")
+            
+            # Set to eval mode by default
+            self.model.eval()
+            self.sentiment_model.eval()
+            
+            self.logger.info(f"✓ FinBERT loaded successfully on {self.device}")
+            self.logger.info(f"  - Model: {model_name}")
+            self.logger.info(f"  - Vocab size: {len(self.tokenizer)}")
+            self.logger.info(f"  - Max length: {self.tokenizer.model_max_length}")
+            
         except Exception as e:
-            self.logger.error(f"Error loading model: {str(e)}")
-            raise
+            self.logger.error(f"✗ Error loading FinBERT: {str(e)}")
+            self.logger.error(f"  Model: {model_name}")
+            self.logger.error(f"  Please ensure transformers library is up to date:")
+            self.logger.error(f"  pip install --upgrade transformers torch")
+            raise RuntimeError(f"Failed to load FinBERT: {e}") from e
     
     def get_embeddings(self, texts: List[str], max_length: int = 512) -> np.ndarray:
         """
