@@ -415,96 +415,175 @@ class EnhancedNumericalFeatures:
     ) -> pd.DataFrame:
         """
         Add competitor correlation and divergence features
-        
+        (Corrected Version 2 - More Robust Date Handling and Merging)
+
         Args:
-            stock_df: Main stock DataFrame
-            competitor_data: Dictionary of competitor DataFrames
+            stock_df: Main stock DataFrame (must have 'Date' and 'Returns' columns)
+            competitor_data: Dictionary of competitor DataFrames (must contain 'Date' and a returns/close column)
             window: Rolling correlation window
-            
+
         Returns:
-            DataFrame with competitor features
+            DataFrame with competitor features added (or original df if processing fails)
         """
         if not competitor_data:
-            self.logger.warning("No competitor data available")
+            self.logger.warning("No competitor data provided - skipping competitor features")
             return stock_df
-        
+
         self.logger.info(f"Adding competitor features for {len(competitor_data)} companies...")
-        
+
         df = stock_df.copy()
-        
-        # Ensure Date column is timezone-naive
-        df['Date'] = pd.to_datetime(df['Date'])
+
+        # --- Robust Date Handling for Main DataFrame ---
+        if 'Date' not in df.columns:
+            # If Date is the index, reset it to become a column
+            if isinstance(df.index, pd.DatetimeIndex):
+                df = df.reset_index()
+            else:
+                 # Try finding a date-like index name
+                 date_index_name = next((name for name in df.index.names if 'date' in str(name).lower()), None)
+                 if date_index_name:
+                      df = df.reset_index()
+                      df = df.rename(columns={date_index_name: 'Date'})
+                 else:
+                    raise ValueError("Main stock_df must contain a 'Date' column or have a DatetimeIndex.")
+
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        df = df.dropna(subset=['Date'])
+        # Ensure timezone naive UTC for consistent joining
         if hasattr(df['Date'].dtype, 'tz') and df['Date'].dt.tz is not None:
-            df['Date'] = df['Date'].dt.tz_localize(None)
-        
-        df_indexed = df.set_index('Date')
-        
-        # Collect all competitor returns
+            df['Date'] = df['Date'].dt.tz_convert('UTC').tz_localize(None)
+        else:
+             # If no timezone, assume it might be local, try converting just in case
+             try:
+                  df['Date'] = df['Date'].dt.tz_localize('UTC', ambiguous='infer').dt.tz_localize(None)
+             except TypeError: # Already naive, do nothing
+                  pass
+        df = df.sort_values('Date').reset_index(drop=True) # Reset index after sorting
+
+        # Ensure main df has 'Returns'
+        if 'Returns' not in df.columns:
+            if 'Close' in df.columns:
+                df['Returns'] = df['Close'].pct_change()
+                self.logger.info("Calculated 'Returns' for main stock DataFrame.")
+            else:
+                self.logger.warning("Main stock DataFrame missing 'Close' or 'Returns' column. Cannot calculate competitor correlations.")
+                return df # Cannot proceed without returns
+
+        # Set Date as index AFTER cleaning and sorting for efficient lookup/joining
+        try:
+             df_indexed = df.set_index('Date')
+             if not isinstance(df_indexed.index, pd.DatetimeIndex):
+                  df_indexed.index = pd.to_datetime(df_indexed.index)
+        except Exception as e:
+             self.logger.error(f"Failed to set Date as index for main DataFrame: {e}")
+             return df
+        # --- End Main DF Date Handling ---
+
+        # Collect all valid competitor returns aligned to the main index
         comp_returns_list = []
-        comp_names = []
-        
-        for comp_name, comp_df in competitor_data.items():
-            try:
-                comp = comp_df.copy()
-                
-                # Flatten multi-level columns if present
-                if isinstance(comp.columns, pd.MultiIndex):
-                    comp.columns = comp.columns.get_level_values(0)
-                
-                # Ensure Date column exists
-                if 'Date' not in comp.columns:
-                    comp = comp.reset_index()
-                
-                comp['Date'] = pd.to_datetime(comp['Date'])
-                comp_indexed = comp.set_index('Date')
-                
-                # Remove timezone info if present
-                if comp_indexed.index.tz is not None:
-                    comp_indexed.index = comp_indexed.index.tz_localize(None)
-                
-                # Look for Returns column (might be named differently)
-                returns_col = None
-                for col in comp_indexed.columns:
-                    if 'return' in col.lower():
-                        returns_col = col
-                        break
-                
-                if returns_col is None and 'Close' in comp_indexed.columns:
-                    # Calculate returns if not present
-                    comp_indexed['Returns'] = comp_indexed['Close'].pct_change()
-                    returns_col = 'Returns'
-                
-                if returns_col:
-                    merged = df_indexed.join(comp_indexed[[returns_col]], how='left', rsuffix=f'_{comp_name}')
-                    comp_returns = merged[f'{returns_col}_{comp_name}'].ffill()
-                    
-                    comp_returns_list.append(comp_returns)
-                    comp_names.append(comp_name)
-                    
-                    # Individual correlation
-                    if 'Returns' in df_indexed.columns:
-                        df[f'corr_{comp_name[:10]}'] = df_indexed['Returns'].rolling(window=window).corr(comp_returns).values
-            except Exception as e:
-                self.logger.warning(f"Failed to process competitor {comp_name}: {e}")
+        comp_names_processed = []
+
+        for comp_name, comp_df_orig in competitor_data.items():
+            if comp_df_orig is None or comp_df_orig.empty:
+                self.logger.warning(f"Skipping empty competitor data for {comp_name}")
                 continue
-        
-        if comp_returns_list:
-            # Average competitor return
-            comp_returns_df = pd.DataFrame(comp_returns_list).T
-            df['competitor_avg_return'] = comp_returns_df.mean(axis=1).values
-            
-            # Sentiment divergence (stock vs competitors)
-            df['return_divergence'] = (df['Returns'] - df['competitor_avg_return']).values
-            
-            # Competitor consensus (low std = all moving together)
-            df['competitor_consensus'] = comp_returns_df.std(axis=1).values
-            
-            # Relative strength vs competitors
-            df['rel_strength_comps'] = (df['Returns'].rolling(20).mean() - 
-                                         df['competitor_avg_return'].rolling(20).mean()).values
-            
-            self.logger.info(f"✅ Added features for {len(competitor_data)} competitors")
-        
+            comp_df = comp_df_orig.copy()
+
+            try:
+                # --- Robust Date and Returns Handling for Competitor DataFrame ---
+                if 'Date' not in comp_df.columns:
+                    if isinstance(comp_df.index, pd.DatetimeIndex):
+                         comp_df = comp_df.reset_index()
+                    else:
+                         date_index_name = next((name for name in comp_df.index.names if 'date' in str(name).lower()), None)
+                         if date_index_name:
+                              comp_df = comp_df.reset_index()
+                              comp_df = comp_df.rename(columns={date_index_name: 'Date'})
+                         else:
+                              self.logger.warning(f"Skipping competitor {comp_name}: Missing 'Date' column.")
+                              continue
+
+                comp_df['Date'] = pd.to_datetime(comp_df['Date'], errors='coerce')
+                comp_df = comp_df.dropna(subset=['Date'])
+                if hasattr(comp_df['Date'].dtype, 'tz') and comp_df['Date'].dt.tz is not None:
+                     comp_df['Date'] = comp_df['Date'].dt.tz_convert('UTC').tz_localize(None)
+                else:
+                    try:
+                         comp_df['Date'] = comp_df['Date'].dt.tz_localize('UTC', ambiguous='infer').dt.tz_localize(None)
+                    except TypeError:
+                         pass
+                comp_df = comp_df.sort_values('Date')
+
+                # Identify or calculate 'Returns' column
+                returns_col = None
+                if 'Returns' in comp_df.columns:
+                     returns_col = 'Returns'
+                elif f'{comp_name}_Returns' in comp_df.columns:
+                     returns_col = f'{comp_name}_Returns'
+                elif 'Close' in comp_df.columns:
+                     comp_df['Returns'] = comp_df['Close'].pct_change()
+                     returns_col = 'Returns'
+                elif f'{comp_name}_Close' in comp_df.columns:
+                     comp_df['Returns'] = comp_df[f'{comp_name}_Close'].pct_change()
+                     returns_col = 'Returns'
+
+                if not returns_col or returns_col not in comp_df.columns:
+                     self.logger.warning(f"Skipping competitor {comp_name}: Cannot find or calculate 'Returns'. Columns: {comp_df.columns}")
+                     continue
+
+                # Prepare for join: Use only Date and Returns, set index
+                comp_df_join = comp_df[['Date', returns_col]].rename(columns={returns_col: f'{comp_name}_Returns'}).dropna().set_index('Date')
+                if not isinstance(comp_df_join.index, pd.DatetimeIndex):
+                     comp_df_join.index = pd.to_datetime(comp_df_join.index)
+                # --- End Comp DF Handling ---
+
+                # Merge competitor returns onto the main DataFrame's dates
+                # Use left merge to keep all main stock dates
+                df = pd.merge(df, comp_df_join, on='Date', how='left')
+                # Forward fill missing competitor returns
+                df[f'{comp_name}_Returns'] = df[f'{comp_name}_Returns'].ffill()
+
+                # Store the successfully processed competitor name and aligned returns for aggregation
+                if f'{comp_name}_Returns' in df.columns:
+                     comp_returns_list.append(df[f'{comp_name}_Returns'])
+                     comp_names_processed.append(comp_name)
+                     self.logger.info(f"   Successfully processed and merged {comp_name}")
+                else:
+                     self.logger.warning(f"   Merge failed for {comp_name}, column not found after merge.")
+
+
+            except Exception as e:
+                self.logger.warning(f"Failed during processing competitor {comp_name}: {e}", exc_info=False)
+                continue
+
+        if not comp_names_processed:
+            self.logger.warning("No valid competitor data could be processed or merged - skipping competitor features calculation.")
+            return stock_df # Return original df if no competitors worked
+
+        # --- Calculate Features using Merged Data ---
+        self.logger.info(f"Calculating competitor features using data from: {', '.join(comp_names_processed)}")
+
+        # Calculate individual correlations using the merged columns in df
+        for comp_name in comp_names_processed:
+             comp_returns_col = f'{comp_name}_Returns'
+             if pd.api.types.is_numeric_dtype(df['Returns']) and pd.api.types.is_numeric_dtype(df[comp_returns_col]):
+                  df[f'corr_{comp_name[:10]}'] = df['Returns'].rolling(window=window, min_periods=window//2).corr(df[comp_returns_col])
+             else:
+                  self.logger.warning(f"Skipping correlation for {comp_name}: Non-numeric returns data after merge.")
+                  df[f'corr_{comp_name[:10]}'] = np.nan
+
+        # Calculate aggregate competitor features using the successfully merged columns
+        comp_returns_cols_to_agg = [f'{name}_Returns' for name in comp_names_processed]
+        df['competitor_avg_return'] = df[comp_returns_cols_to_agg].mean(axis=1)
+        df['return_divergence'] = df['Returns'] - df['competitor_avg_return']
+        df['competitor_consensus_std'] = df[comp_returns_cols_to_agg].std(axis=1)
+        df['rel_strength_comps_20d'] = df['Returns'].rolling(20).mean() - df['competitor_avg_return'].rolling(20).mean()
+
+        # Clean up intermediate competitor return columns? Optional.
+        # df = df.drop(columns=comp_returns_cols_to_agg)
+
+        self.logger.info(f"✅ Added aggregate features for {len(comp_names_processed)} competitors.")
+
         return df
     
     def create_all_features(

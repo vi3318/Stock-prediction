@@ -3,7 +3,12 @@ Enhanced Data Collection Module
 Supports extended date ranges, market-wide data, competitor news, and macroeconomic indicators
 """
 
-import yfinance as yf
+try:
+    import yfinance as yf
+    YFINANCE_AVAILABLE = True
+except ImportError:
+    yf = None
+    YFINANCE_AVAILABLE = False
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -16,6 +21,9 @@ import os
 from .collectors import StockDataCollector, NewsDataCollector
 
 logger = logging.getLogger(__name__)
+
+if not YFINANCE_AVAILABLE:
+    logger.warning("yfinance not available. Stock data collection will be limited.")
 
 
 # Competitor/Correlation mappings
@@ -97,6 +105,10 @@ class EnhancedStockDataCollector(StockDataCollector):
         Returns:
             True if connectivity works, False otherwise
         """
+        if not YFINANCE_AVAILABLE:
+            self.logger.warning("yfinance not available - cannot test connectivity")
+            return False
+        
         self.logger.info(f"Testing yfinance connectivity with {ticker}...")
         
         try:
@@ -145,6 +157,10 @@ class EnhancedStockDataCollector(StockDataCollector):
         Returns:
             DataFrame with OHLCV data
         """
+        if not YFINANCE_AVAILABLE:
+            self.logger.error("yfinance not available - cannot fetch stock data")
+            return pd.DataFrame()
+        
         try:
             self.logger.info(f"Fetching stock data for {ticker} from {start_date} to {end_date}")
             

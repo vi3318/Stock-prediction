@@ -3,9 +3,16 @@ Hyperparameter Optimization using Optuna
 Automated tuning for all model hyperparameters
 """
 
-import optuna
-from optuna.pruners import MedianPruner
-from optuna.samplers import TPESampler
+try:
+    import optuna
+    from optuna.pruners import MedianPruner
+    from optuna.samplers import TPESampler
+    OPTUNA_AVAILABLE = True
+except ImportError:
+    optuna = None
+    MedianPruner = None
+    TPESampler = None
+    OPTUNA_AVAILABLE = False
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -16,6 +23,12 @@ from pathlib import Path
 import json
 
 from src.models.advanced_models import create_model
+
+
+logger = logging.getLogger(__name__)
+
+if not OPTUNA_AVAILABLE:
+    logger.warning("optuna not available. Hyperparameter optimization will be disabled.")
 
 
 class HyperparameterOptimizer:
@@ -89,7 +102,7 @@ class HyperparameterOptimizer:
         
         self.logger.info(f"Data set: Train={len(train_dataset)}, Val={len(val_dataset)}")
     
-    def define_search_space(self, trial: optuna.Trial) -> Dict:
+    def define_search_space(self, trial) -> Dict:
         """
         Define hyperparameter search space
         
@@ -134,7 +147,7 @@ class HyperparameterOptimizer:
         
         return config
     
-    def objective(self, trial: optuna.Trial) -> float:
+    def objective(self, trial) -> float:
         """
         Objective function for Optuna
         
@@ -309,7 +322,7 @@ class HyperparameterOptimizer:
         
         return self.best_params
     
-    def save_results(self, study: optuna.Study, output_dir: str = 'results/optimization'):
+    def save_results(self, study, output_dir: str = 'results/optimization'):
         """
         Save optimization results
         

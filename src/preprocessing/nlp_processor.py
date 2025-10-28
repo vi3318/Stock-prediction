@@ -8,25 +8,52 @@ import logging
 from typing import List, Dict, Tuple, Optional
 import pandas as pd
 import numpy as np
-import spacy
-from transformers import AutoTokenizer, AutoModel, AutoModelForSequenceClassification
 import torch
-from sentence_transformers import SentenceTransformer
-from textblob import TextBlob
-import nltk
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
 
-# Download required NLTK data
+# Optional imports with fallbacks
 try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    nltk.download('punkt')
+    import spacy
+    SPACY_AVAILABLE = True
+except ImportError:
+    SPACY_AVAILABLE = False
+    spacy = None
 
 try:
-    nltk.data.find('corpora/stopwords')
-except LookupError:
-    nltk.download('stopwords')
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    SentenceTransformer = None
+
+try:
+    from textblob import TextBlob
+    TEXTBLOB_AVAILABLE = True
+except ImportError:
+    TEXTBLOB_AVAILABLE = False
+    TextBlob = None
+
+try:
+    import nltk
+    from nltk.corpus import stopwords
+    from nltk.tokenize import word_tokenize
+    NLTK_AVAILABLE = True
+except ImportError:
+    NLTK_AVAILABLE = False
+    nltk = None
+    stopwords = None
+    word_tokenize = None
+
+# Download required NLTK data if available
+if NLTK_AVAILABLE:
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt')
+
+    try:
+        nltk.data.find('corpora/stopwords')
+    except LookupError:
+        nltk.download('stopwords')
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +324,8 @@ class FinancialTextEmbedder:
         
         try:
             # FinBERT requires specific trust settings and proper device handling
+            from transformers import AutoTokenizer, AutoModel, AutoModelForSequenceClassification
+            
             self.logger.info(f"Loading FinBERT model: {model_name}")
             
             # Load tokenizer with proper settings

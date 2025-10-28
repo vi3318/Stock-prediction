@@ -3,10 +3,20 @@ Data Collection Module
 Handles fetching financial news and stock price data from various sources
 """
 
-import yfinance as yf
+try:
+    import yfinance as yf
+    YFINANCE_AVAILABLE = True
+except ImportError:
+    yf = None
+    YFINANCE_AVAILABLE = False
 import pandas as pd
 import numpy as np
-from newsapi import NewsApiClient
+try:
+    from newsapi import NewsApiClient
+    NEWSAPI_AVAILABLE = True
+except ImportError:
+    NewsApiClient = None
+    NEWSAPI_AVAILABLE = False
 from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
@@ -18,6 +28,12 @@ import time
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+if not YFINANCE_AVAILABLE:
+    logger.warning("yfinance not available. Stock data collection will be limited.")
+
+if not NEWSAPI_AVAILABLE:
+    logger.warning("newsapi not available. NewsAPI collection will be disabled.")
 
 
 class StockDataCollector:
@@ -43,6 +59,10 @@ class StockDataCollector:
         Returns:
             DataFrame with OHLCV data
         """
+        if not YFINANCE_AVAILABLE:
+            self.logger.error("yfinance not available - cannot fetch stock data")
+            return pd.DataFrame()
+        
         try:
             self.logger.info(f"Fetching stock data for {ticker} from {start_date} to {end_date}")
             stock = yf.Ticker(ticker)
@@ -101,7 +121,7 @@ class NewsDataCollector:
     
     def __init__(self):
         self.newsapi_key = os.getenv('NEWS_API_KEY')
-        self.newsapi = NewsApiClient(api_key=self.newsapi_key) if self.newsapi_key else None
+        self.newsapi = NewsApiClient(api_key=self.newsapi_key) if self.newsapi_key and NEWSAPI_AVAILABLE else None
         self.logger = logging.getLogger(self.__class__.__name__)
     
     def fetch_newsapi(
@@ -123,8 +143,8 @@ class NewsDataCollector:
         Returns:
             List of news articles
         """
-        if not self.newsapi:
-            self.logger.warning("NewsAPI key not configured")
+        if not NEWSAPI_AVAILABLE or not self.newsapi:
+            self.logger.warning("NewsAPI not available or not configured")
             return []
         
         try:
@@ -185,6 +205,10 @@ class NewsDataCollector:
         Returns:
             List of news articles
         """
+        if not YFINANCE_AVAILABLE:
+            self.logger.warning("yfinance not available - cannot fetch Yahoo Finance news")
+            return []
+        
         try:
             self.logger.info(f"Fetching Yahoo Finance news for {ticker}")
             stock = yf.Ticker(ticker)

@@ -13,15 +13,16 @@ import torch
 from datetime import datetime, timedelta
 import logging
 import json
+import pickle
 import warnings
 warnings.filterwarnings('ignore')
 
 from src.data_collection.enhanced_collectors import EnhancedDataManager
 from src.features.enhanced_features import EnhancedNumericalFeatures
-from src.preprocessing.nlp_processor import NewsProcessor
 from src.models.advanced_models import create_model
 from src.training.enhanced_trainer import EnhancedTrainer
 from src.training.hyperparameter_optimizer import HyperparameterOptimizer
+from src.preprocessing.nlp_processor import FinancialTextEmbedder
 from scripts.compare_models import ModelComparator
 
 # Setup logging
@@ -65,6 +66,10 @@ class FullTrainingPipeline:
         
         # Checkpoint file
         self.checkpoint_file = self.output_dir / 'pipeline_checkpoint.json'
+        
+        # Data split ratios
+        self.test_split = 0.15
+        self.validation_split = 0.15
         
         logger.info(f"\n{'='*80}")
         logger.info("FULL TRAINING PIPELINE INITIALIZED")
@@ -192,6 +197,149 @@ class FullTrainingPipeline:
         
         return stock_df, news_df
     
+    def step1b_process_news_embeddings(self):
+        """Step 1B: Generate FinBERT embeddings for news (Corrected Version with Robust Date Parsing)"""
+        logger.info("\n" + "="*80)
+        logger.info("STEP 1B: NEWS EMBEDDING GENERATION")
+        logger.info("="*80 + "\n")
+
+        # Check if news_df exists and has data
+        if not hasattr(self, 'news_df') or self.news_df is None or self.news_df.empty:
+            logger.warning("No news data loaded in self.news_df - skipping embedding generation.")
+            self.news_df_with_embeddings = None
+            self.news_embeddings = None
+            return
+
+        try:
+            logger.info(f"Generating FinBERT embeddings for {len(self.news_df)} news articles...")
+
+            # Initialize FinBERT
+            embedder = FinancialTextEmbedder() # Uses default 'ProsusAI/finbert'
+
+            # --- Robust Date Handling ---
+            published_col_name = None
+            # 1. Find the date column
+            if 'published_at' in self.news_df.columns:
+                published_col_name = 'published_at'
+            else:
+                # Look for likely Finviz date column (often unnamed or has date-like string)
+                for col in self.news_df.columns:
+                     # Check if column contains strings matching Finviz date patterns
+                     if self.news_df[col].astype(str).str.match(r'(\w{3}-\d{2}-\d{2} \d{2}:\d{2}[AP]M|\d{2}:\d{2}[AP]M|\w{3}-\d{2})').any():
+                         published_col_name = col
+                         logger.warning(f"Column 'published_at' not found, using likely Finviz date column '{published_col_name}'.")
+                         break
+                if not published_col_name:
+                     # Fallback to finding any column with 'date' or 'time'
+                     date_cols = [col for col in self.news_df.columns if 'date' in col.lower() or 'time' in col.lower()]
+                     if date_cols:
+                          published_col_name = date_cols[0]
+                          logger.warning(f"Column 'published_at' not found, using fallback date column '{published_col_name}'.")
+                     else:
+                          raise ValueError("Cannot find a suitable date column (like 'published_at' or Finviz format) in news_df.")
+
+            # 2. Define Finviz Date Parser
+            def parse_finviz_date(date_str):
+                """Parses Finviz absolute ('Oct-28-25 05:38PM'), time-only ('05:38PM'), or date-only ('Oct-28') formats."""
+                try:
+                    # Try absolute format first (e.g., 'Oct-28-25 05:38PM') - Assuming ET timezone
+                    dt = pd.to_datetime(date_str, format='%b-%d-%y %I:%M%p', errors='raise').tz_localize('America/New_York')
+                    return dt.tz_convert('UTC') # Convert to UTC
+                except (ValueError, TypeError):
+                    try:
+                        # Try time-only format ('05:38PM' means today) - Assuming ET timezone
+                        time_part = pd.to_datetime(date_str, format='%I:%M%p', errors='raise').time()
+                        # Use current date but keep original time - handle potential timezone issues carefully
+                        dt_today_et = pd.Timestamp.now(tz='America/New_York').normalize() # Start of today in ET
+                        dt = dt_today_et.replace(hour=time_part.hour, minute=time_part.minute, second=0, microsecond=0)
+                        return dt.tz_convert('UTC') # Convert to UTC
+                    except (ValueError, TypeError):
+                        try:
+                            # Try date-only format ('Oct-28' means this year) - Assuming ET timezone, set time to market close (e.g., 4 PM ET)
+                            date_part = pd.to_datetime(date_str, format='%b-%d', errors='raise')
+                            current_year = pd.Timestamp.now(tz='America/New_York').year
+                            dt = date_part.replace(year=current_year).tz_localize('America/New_York')
+                            # Set time to something reasonable like 4 PM ET
+                            dt = dt.replace(hour=16, minute=0, second=0, microsecond=0)
+                            return dt.tz_convert('UTC') # Convert to UTC
+                        except (ValueError, TypeError):
+                            # Try standard pandas parsing as a fallback, convert to UTC
+                            dt_standard = pd.to_datetime(date_str, errors='coerce', utc=True)
+                            if pd.isna(dt_standard):
+                                 logger.debug(f"Could not parse date: {date_str}") # Log unparseable dates
+                            return dt_standard # Return NaT if standard parsing fails
+
+            # 3. Apply robust parsing and cleaning
+            self.news_df['parsed_datetime_utc'] = self.news_df[published_col_name].astype(str).apply(parse_finviz_date)
+
+            initial_rows = len(self.news_df)
+            self.news_df = self.news_df.dropna(subset=['parsed_datetime_utc'])
+            dropped_rows = initial_rows - len(self.news_df)
+            if dropped_rows > 0:
+                logger.warning(f"Dropped {dropped_rows} news articles due to invalid/unparseable dates.")
+            if self.news_df.empty:
+                logger.warning("No valid news articles remaining after date cleaning.")
+                self.news_df_with_embeddings = None
+                self.news_embeddings = None
+                return
+
+            # 4. Sort by date
+            self.news_df = self.news_df.sort_values('parsed_datetime_utc')
+            # --- End Date Handling ---
+
+            # Prepare news texts
+            title_col = 'title' if 'title' in self.news_df.columns else ''
+            desc_col = 'description' if 'description' in self.news_df.columns else ''
+            if not title_col and not desc_col:
+                 raise ValueError("News DataFrame must contain 'title' or 'description'.")
+
+            texts = []
+            for _, row in self.news_df.iterrows():
+                 title_text = row.get(title_col, '') or ''
+                 desc_text = row.get(desc_col, '') or ''
+                 texts.append(f"{title_text} {desc_text}".strip())
+
+            # --- Correct call to process_news_batch ---
+            self.news_df['temp_combined_text'] = texts
+            # Make sure the embedder uses the specified text column
+            embeddings, sentiments = embedder.process_news_batch(self.news_df, text_column='temp_combined_text')
+            self.news_df = self.news_df.drop(columns=['temp_combined_text'])
+            # --- End Correct Call ---
+
+            if len(embeddings) == len(self.news_df):
+                self.news_df['embedding'] = list(embeddings)
+                self.news_df['sentiment_score'] = sentiments[:, 2] - sentiments[:, 0]
+                self.news_df_with_embeddings = self.news_df.copy() # Store the updated df
+                self.news_embeddings = embeddings
+
+                logger.info(f"✅ Embeddings generated successfully. Shape: {embeddings.shape}")
+
+                # --- Add 'Date' column (normalized, timezone-naive UTC date) for alignment ---
+                self.news_df_with_embeddings['Date'] = self.news_df_with_embeddings['parsed_datetime_utc'].dt.tz_localize(None).dt.normalize()
+                logger.info(f"   Added 'Date' column for alignment. Date range: {self.news_df_with_embeddings['Date'].min().date()} to {self.news_df_with_embeddings['Date'].max().date()}")
+                # --- End Add Date Column ---
+
+                # Save embeddings DataFrame with dates
+                embeddings_path = self.output_dir / 'news_embeddings.pkl'
+                with open(embeddings_path, 'wb') as f:
+                    pickle.dump(self.news_df_with_embeddings, f)
+                logger.info(f"   Saved DataFrame with embeddings and dates to: {embeddings_path}")
+            else:
+                logger.error(f"Mismatch in embedding count ({len(embeddings)}) and news DataFrame rows ({len(self.news_df)}) after date cleaning. Skipping embedding assignment.")
+                self.news_df_with_embeddings = None
+                self.news_embeddings = None
+
+        except ImportError as e:
+            logger.error(f"Failed to import embedding class: {e}", exc_info=True)
+            logger.warning("Continuing without text embeddings...")
+            self.news_df_with_embeddings = None
+            self.news_embeddings = None
+        except Exception as e:
+            logger.error(f"Failed to generate embeddings: {e}", exc_info=True)
+            logger.warning("Continuing without text embeddings...")
+            self.news_df_with_embeddings = None
+            self.news_embeddings = None
+    
     def step2_create_features(self):
         """Step 2: Create 80-100 enhanced features"""
         logger.info("\n" + "="*80)
@@ -233,114 +381,228 @@ class FullTrainingPipeline:
         return features_df
     
     def step3_create_sequences(self):
-        """Step 3: Create sequences and labels"""
+        """Step 3: Create sequences and labels, correctly aligning embeddings"""
         logger.info("\n" + "="*80)
         logger.info("STEP 3: SEQUENCE CREATION")
         logger.info("="*80 + "\n")
-        
-        # Drop NaN rows
-        clean_df = self.features_df.dropna()
-        logger.info(f"Clean samples: {len(clean_df)}")
-        
+
+        # --- Ensure 'Date' column exists and is datetime in features_df ---
+        if 'Date' not in self.features_df.columns and 'date' in self.features_df.columns:
+             self.features_df = self.features_df.rename(columns={'date': 'Date'})
+        if 'Date' not in self.features_df.columns:
+             raise ValueError("Feature DataFrame must have a 'Date' column.")
+        self.features_df['Date'] = pd.to_datetime(self.features_df['Date'], errors='coerce')
+        self.features_df = self.features_df.dropna(subset=['Date'])
+        # Ensure timezone naive for merging/lookup
+        if hasattr(self.features_df['Date'].dtype, 'tz') and self.features_df['Date'].dt.tz is not None:
+            self.features_df['Date'] = self.features_df['Date'].dt.tz_localize(None)
+        self.features_df = self.features_df.sort_values('Date').reset_index(drop=True)
+        # --- End Date Handling ---
+
+        # Drop initial NaN rows created by indicators/returns
+        initial_len = len(self.features_df)
+        clean_df = self.features_df.dropna(axis=0, how='any') # Drop rows with ANY NaNs
+        dropped_rows = initial_len - len(clean_df)
+        if dropped_rows > 0:
+            logger.info(f"Dropped {dropped_rows} initial rows containing NaNs.")
+        if len(clean_df) < self.sequence_length + 1:
+             raise ValueError(f"Not enough data ({len(clean_df)} rows) after dropping NaNs to create sequences of length {self.sequence_length}.")
+        logger.info(f"Clean samples available for sequencing: {len(clean_df)}")
+
         # Create target (next day price up/down)
-        if 'close' in clean_df.columns:
-            clean_df['target'] = (clean_df['close'].shift(-1) > clean_df['close']).astype(int)
-        elif 'Close' in clean_df.columns:
-            clean_df['target'] = (clean_df['Close'].shift(-1) > clean_df['Close']).astype(int)
-        else:
-            raise ValueError("No 'close' or 'Close' column found")
-        
+        target_col = 'Close' if 'Close' in clean_df.columns else 'close'
+        if target_col not in clean_df.columns:
+             raise ValueError("No 'close' or 'Close' column found for target creation.")
+        clean_df['target'] = (clean_df[target_col].shift(-1) > clean_df[target_col]).astype(int)
+
         # Remove last row (no target)
-        clean_df = clean_df[:-1]
-        
-        # Get feature columns (exclude target and date columns)
-        feature_cols = [c for c in clean_df.columns 
-                        if c not in ['target', 'date', 'Date', 'timestamp', 'Ticker']]
-        
-        logger.info(f"Feature columns: {len(feature_cols)}")
-        
+        clean_df = clean_df.iloc[:-1]
+        if len(clean_df) < self.sequence_length:
+             raise ValueError(f"Not enough data ({len(clean_df)} rows) after target creation to create sequences of length {self.sequence_length}.")
+
+        # Get feature columns (exclude target and date-related columns)
+        exclude_cols = ['target', 'Date', 'date', 'timestamp', 'Ticker', 'published_at', 'embedding', 'sentiment_score'] # Add embedding/sentiment if they ended up here
+        feature_cols = [c for c in clean_df.columns if c not in exclude_cols and not c.startswith('embedding_')] # Exclude individual embedding dims if flattened
+
+        # Filter out non-numeric columns that might have slipped through
+        numeric_feature_cols = clean_df[feature_cols].select_dtypes(include=np.number).columns.tolist()
+        if len(numeric_feature_cols) != len(feature_cols):
+             dropped = set(feature_cols) - set(numeric_feature_cols)
+             logger.warning(f"Dropping non-numeric columns from features: {dropped}")
+             feature_cols = numeric_feature_cols
+
+        logger.info(f"Using {len(feature_cols)} numerical feature columns for sequences.")
+        if not feature_cols:
+             raise ValueError("No valid numerical feature columns found for sequence creation.")
+
         # Create separate numerical and text sequences
-        X_num = []  # Numerical features only
-        X_text = []  # Text embeddings (if available)
-        y = []
-        
-        # Check if news data with embeddings is available
-        has_text_embeddings = hasattr(self, 'news_df') and 'embedding' in self.news_df.columns
-        
-        for i in range(len(clean_df) - self.sequence_length):
-            # Numerical features
-            X_num.append(clean_df[feature_cols].iloc[i:i+self.sequence_length].values)
-            
-            # Text embeddings (default to zeros if not available)
+        X_num_list = []  # Numerical features only
+        X_text_list = [] # Text embeddings (if available)
+        y_list = []
+        dates_list = [] # Keep track of the target date for each sequence
+
+        # --- Prepare Embeddings Lookup ---
+        has_text_embeddings = hasattr(self, 'news_df_with_embeddings') and self.news_df_with_embeddings is not None and not self.news_df_with_embeddings.empty and 'embedding' in self.news_df_with_embeddings.columns
+        daily_embeddings_dict = {}
+        embedding_dim = 0
+        if has_text_embeddings:
+            logger.info("News embeddings available - creating multimodal sequences")
+            # Ensure Date is datetime and timezone naive
+            self.news_df_with_embeddings['Date'] = pd.to_datetime(self.news_df_with_embeddings['Date']).dt.normalize()
+            if hasattr(self.news_df_with_embeddings['Date'].dtype, 'tz') and self.news_df_with_embeddings['Date'].dt.tz is not None:
+                 self.news_df_with_embeddings['Date'] = self.news_df_with_embeddings['Date'].dt.tz_localize(None)
+
+            # Group embeddings by date (average if multiple news per day)
+            daily_embeddings_grouped = self.news_df_with_embeddings.groupby('Date')['embedding'].apply(
+                 lambda x: np.mean(np.vstack(x.tolist()), axis=0) if not x.empty else None # Handle potential empty groups
+            )
+            daily_embeddings_dict = daily_embeddings_grouped.to_dict()
+            # Get embedding dimension dynamically
+            first_valid_embedding = next((emb for emb in daily_embeddings_dict.values() if emb is not None), None)
+            if first_valid_embedding is not None:
+                 embedding_dim = first_valid_embedding.shape[0]
+                 logger.info(f"Detected embedding dimension: {embedding_dim}")
+            else:
+                 logger.warning("Could not determine embedding dimension from available news. Disabling text features.")
+                 has_text_embeddings = False # Disable if no valid embeddings found
+                 embedding_dim = 768 # Default fallback if needed elsewhere, but features won't be used
+        else:
+            logger.warning("No valid news embeddings found or loaded - using numerical features only")
+            embedding_dim = 768 # Default dimension if needed, but text features won't be used
+        # --- End Embeddings Lookup Prep ---
+
+
+        # --- Create Sequences ---
+        num_samples = len(clean_df)
+        for i in range(self.sequence_length, num_samples):
+            # Target date for this sequence's prediction is date at index i
+            target_date = clean_df['Date'].iloc[i]
+
+            # Numerical features sequence: indices [i - sequence_length] to [i - 1]
+            num_sequence = clean_df[feature_cols].iloc[i-self.sequence_length : i].values
+            X_num_list.append(num_sequence)
+
+            # Text embeddings sequence (align with stock dates)
             if has_text_embeddings:
-                # TODO: Align news embeddings with stock dates for this sequence
-                # For now, use zero embeddings as placeholder
-                X_text.append(np.zeros((self.sequence_length, 768), dtype=np.float32))
-            
-            y.append(clean_df['target'].iloc[i+self.sequence_length])
-        
-        X_num = np.array(X_num, dtype=np.float32)
-        X_text = np.array(X_text, dtype=np.float32) if has_text_embeddings else None
-        y = np.array(y, dtype=np.int64)
-        
-        logger.info(f"Sequences created: {len(X_num)}")
+                text_sequence = []
+                # Dates corresponding to the numerical sequence window
+                sequence_dates = clean_df['Date'].iloc[i-self.sequence_length : i]
+
+                for date in sequence_dates:
+                    # Normalize date just in case
+                    lookup_date = date.normalize()
+                    # Get embedding for this date, or use zeros if no news
+                    embedding = daily_embeddings_dict.get(lookup_date, None)
+                    if embedding is not None:
+                        text_sequence.append(embedding)
+                    else:
+                        # Use zeros if no embedding found for that day
+                        text_sequence.append(np.zeros(embedding_dim, dtype=np.float32))
+
+                # Ensure the sequence has the correct length (should be guaranteed by loop)
+                if len(text_sequence) == self.sequence_length:
+                    X_text_list.append(np.array(text_sequence, dtype=np.float32))
+                else:
+                    # This case should ideally not happen if data is clean
+                    logger.error(f"Text sequence length mismatch at index {i}. Expected {self.sequence_length}, got {len(text_sequence)}. Skipping sequence.")
+                    # Remove the corresponding numerical sequence and skip target
+                    X_num_list.pop()
+                    continue # Skip to next iteration
+
+            # Target value corresponds to the state at index i
+            y_list.append(clean_df['target'].iloc[i])
+            dates_list.append(target_date) # Store the date this sequence predicts for
+
+        # --- End Sequence Creation ---
+
+        # Convert lists to numpy arrays
+        X_num = np.array(X_num_list, dtype=np.float32)
+        y = np.array(y_list, dtype=np.int64)
+
+        if has_text_embeddings:
+             # Check if X_text_list was actually populated
+             if X_text_list:
+                 X_text = np.array(X_text_list, dtype=np.float32)
+                 # Verify shapes match after potential skipping
+                 if X_text.shape[0] != X_num.shape[0]:
+                      logger.error(f"Mismatch between Num ({X_num.shape[0]}) and Text ({X_text.shape[0]}) sequence counts. Check alignment logic.")
+                      # Attempt to reconcile - might indicate deeper issues
+                      min_len = min(X_num.shape[0], X_text.shape[0])
+                      X_num = X_num[:min_len]
+                      X_text = X_text[:min_len]
+                      y = y[:min_len]
+                      dates_list = dates_list[:min_len]
+                      logger.warning(f"Trimmed sequences to minimum length: {min_len}")
+             else:
+                 logger.warning("Text sequence list is empty despite embeddings being available. Check date alignment. Disabling text features.")
+                 X_text = None
+                 has_text_embeddings = False # Update flag
+        else:
+             X_text = None
+
+        if X_num.shape[0] == 0:
+             raise ValueError("Sequence creation resulted in zero valid sequences. Check data and parameters.")
+
+        logger.info(f"Final sequences created: {X_num.shape[0]}")
         logger.info(f"Numerical sequence shape: {X_num.shape}")
         if X_text is not None:
-            logger.info(f"Text embedding sequence shape: {X_text.shape}")
+             logger.info(f"Text embedding sequence shape: {X_text.shape}")
+        else:
+             logger.info("No text embedding sequences created.")
         logger.info(f"Labels shape: {y.shape}")
-        logger.info(f"Positive class ratio: {y.mean():.3f}")
-        
-        # Train/val/test split (70/15/15)
-        n_train = int(len(X_num) * 0.70)
-        n_val = int(len(X_num) * 0.15)
-        
+        logger.info(f"Positive class ratio in final sequences: {y.mean():.3f}")
+
+        # --- Train/Val/Test Split (Temporal) ---
+        n_total = len(y)
+        n_test = int(n_total * self.test_split)
+        n_val = int(n_total * self.validation_split)
+        n_train = n_total - n_test - n_val
+
+        if n_train <= 0 or n_val <= 0 or n_test <= 0:
+             raise ValueError(f"Insufficient data for split: Train={n_train}, Val={n_val}, Test={n_test}. Need more data or smaller sequence length/splits.")
+
+        # Temporal split indices
+        train_end_idx = n_train
+        val_end_idx = n_train + n_val
+
         # Split numerical features
-        X_num_train = X_num[:n_train]
-        X_num_val = X_num[n_train:n_train+n_val]
-        X_num_test = X_num[n_train+n_val:]
-        
+        X_num_train = X_num[:train_end_idx]
+        X_num_val = X_num[train_end_idx:val_end_idx]
+        X_num_test = X_num[val_end_idx:]
+
         # Split text features (if available)
         if X_text is not None:
-            X_text_train = X_text[:n_train]
-            X_text_val = X_text[n_train:n_train+n_val]
-            X_text_test = X_text[n_train+n_val:]
+             X_text_train = X_text[:train_end_idx]
+             X_text_val = X_text[train_end_idx:val_end_idx]
+             X_text_test = X_text[val_end_idx:]
         else:
-            X_text_train = None
-            X_text_val = None
-            X_text_test = None
-        
+             X_text_train, X_text_val, X_text_test = None, None, None
+
         # Split labels
-        y_train = y[:n_train]
-        y_val = y[n_train:n_train+n_val]
-        y_test = y[n_train+n_val:]
-        
+        y_train = y[:train_end_idx]
+        y_val = y[train_end_idx:val_end_idx]
+        y_test = y[val_end_idx:]
+        # --- End Split ---
+
         logger.info(f"\nData split:")
-        logger.info(f"  Train: {len(X_num_train)} samples")
-        logger.info(f"  Val:   {len(X_num_val)} samples")
-        logger.info(f"  Test:  {len(X_num_test)} samples")
-        
-        # Store separate arrays
-        self.X_num_train = X_num_train
-        self.X_text_train = X_text_train
-        self.y_train = y_train
-        
-        self.X_num_val = X_num_val
-        self.X_text_val = X_text_val
-        self.y_val = y_val
-        
-        self.X_num_test = X_num_test
-        self.X_text_test = X_text_test
-        self.y_test = y_test
-        
-        # Store only numerical feature count
-        self.num_features = X_num_train.shape[2]
-        
-        logger.info("✅ Sequence creation complete\n")
-        
+        logger.info(f"  Train: {len(y_train)} sequences")
+        logger.info(f"  Val:   {len(y_val)} sequences")
+        logger.info(f"  Test:  {len(y_test)} sequences")
+
+        # Store class attributes
+        self.X_num_train, self.X_text_train, self.y_train = X_num_train, X_text_train, y_train
+        self.X_num_val, self.X_text_val, self.y_val = X_num_val, X_text_val, y_val
+        self.X_num_test, self.X_text_test, self.y_test = X_num_test, X_text_test, y_test
+        self.num_features = X_num_train.shape[2] # Number of numerical features per timestep
+
+        logger.info("✅ Sequence creation and splitting complete\n")
+
         # Save checkpoint
         self.save_checkpoint(3, "Sequence Creation")
-        
-        return X_num_train, X_text_train, y_train, X_num_val, X_text_val, y_val, X_num_test, X_text_test, y_test
+
+        return (X_num_train, X_text_train, y_train,
+                X_num_val, X_text_val, y_val,
+                X_num_test, X_text_test, y_test)
     
     def step4_run_comparison(self):
         """Step 4: Run baseline vs enhanced comparison"""
@@ -745,10 +1007,24 @@ For usage instructions, see `QUICKSTART.md` and `ENHANCED_SYSTEM_USAGE.md`.
             # Step 1: Collect data
             if start_from_step <= 1:
                 self.step1_collect_data()
+                self.step1b_process_news_embeddings()
             else:
                 logger.info("Step 1: Skipped (loading from saved data)")
                 self.stock_df = pd.read_csv(self.output_dir / 'stock_data.csv')
                 self.news_df = pd.read_csv(self.output_dir / 'news_data.csv')
+                # Try to load embeddings if available
+                try:
+                    import pickle
+                    embeddings_path = self.output_dir / 'news_embeddings.pkl'
+                    if embeddings_path.exists():
+                        with open(embeddings_path, 'rb') as f:
+                            self.news_df_with_embeddings = pickle.load(f)
+                        logger.info(f"Loaded {len(self.news_df_with_embeddings)} news embeddings from checkpoint")
+                    else:
+                        self.news_df_with_embeddings = None
+                except Exception as e:
+                    logger.warning(f"Could not load embeddings: {e}")
+                    self.news_df_with_embeddings = None
                 # Initialize empty data for feature engineering (not critical for checkpoint resume)
                 self.market_data = {}
                 self.sector_df = None

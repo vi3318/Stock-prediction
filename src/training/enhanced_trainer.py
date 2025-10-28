@@ -252,7 +252,12 @@ class EnhancedTrainer:
         # Loss function with class weighting for imbalanced data
         # Calculate class weights from training data
         train_labels = []
-        for _, batch_y in train_loader:
+        for batch_data in train_loader:
+            # Unpack based on whether text features are present
+            if self.has_text_features:
+                _, _, batch_y = batch_data
+            else:
+                _, batch_y = batch_data
             train_labels.extend(batch_y.cpu().numpy())
         train_labels = np.array(train_labels)
         
