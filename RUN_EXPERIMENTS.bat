@@ -76,12 +76,19 @@ echo   - Extract FinBERT embeddings from news
 echo   - Train hybrid BiLSTM-Transformer model
 echo   - Run Optuna hyperparameter optimization (100 trials)
 echo.
+echo Logging to: logs\full_training.log
+echo.
 
-python scripts\train_full_system.py --ticker AAPL --days 1000 --n-trials 100
+REM Run and log both to console and file
+python scripts\train_full_system.py --ticker AAPL --days 1000 --n-trials 100 > logs\full_training.log 2>&1
+set training_error=%errorlevel%
 
-if errorlevel 1 (
+REM Display the log file
+type logs\full_training.log
+
+if %training_error% neq 0 (
     echo.
-    echo ERROR: Training failed!
+    echo ERROR: Training failed
     echo Check logs\full_training.log for details
     pause
     exit /b 1

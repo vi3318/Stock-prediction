@@ -162,10 +162,24 @@ class EnhancedNumericalFeatures:
         
         df = stock_df.copy()
         
+        # Ensure Date column is timezone-naive
+        df['Date'] = pd.to_datetime(df['Date'])
+        if hasattr(df['Date'].dtype, 'tz') and df['Date'].dt.tz is not None:
+            df['Date'] = df['Date'].dt.tz_localize(None)
+        
         # S&P 500 correlation
         if 'sp500' in market_data and not market_data['sp500'].empty:
             sp500 = market_data['sp500'].copy()
+            
+            # Flatten multi-level columns if present
+            if isinstance(sp500.columns, pd.MultiIndex):
+                sp500.columns = sp500.columns.get_level_values(0)
+            
             sp500.index = pd.to_datetime(sp500.index)
+            
+            # Remove timezone info if present
+            if sp500.index.tz is not None:
+                sp500.index = sp500.index.tz_localize(None)
             
             # Align on dates
             merged = df.set_index('Date').join(sp500[['Returns']], how='left', rsuffix='_sp500')
@@ -186,7 +200,16 @@ class EnhancedNumericalFeatures:
         # VIX features
         if 'vix' in market_data and not market_data['vix'].empty:
             vix = market_data['vix'].copy()
+            
+            # Flatten multi-level columns if present
+            if isinstance(vix.columns, pd.MultiIndex):
+                vix.columns = vix.columns.get_level_values(0)
+            
             vix.index = pd.to_datetime(vix.index)
+            
+            # Remove timezone info if present
+            if vix.index.tz is not None:
+                vix.index = vix.index.tz_localize(None)
             
             merged = df.set_index('Date').join(vix[['Close']], how='left', rsuffix='_vix')
             df['vix_level'] = merged['Close_vix'].values
@@ -201,7 +224,16 @@ class EnhancedNumericalFeatures:
         # Nasdaq correlation
         if 'nasdaq' in market_data and not market_data['nasdaq'].empty:
             nasdaq = market_data['nasdaq'].copy()
+            
+            # Flatten multi-level columns if present
+            if isinstance(nasdaq.columns, pd.MultiIndex):
+                nasdaq.columns = nasdaq.columns.get_level_values(0)
+            
             nasdaq.index = pd.to_datetime(nasdaq.index)
+            
+            # Remove timezone info if present
+            if nasdaq.index.tz is not None:
+                nasdaq.index = nasdaq.index.tz_localize(None)
             
             merged = df.set_index('Date').join(nasdaq[['Returns']], how='left', rsuffix='_nasdaq')
             df['nasdaq_returns'] = merged['Returns_nasdaq'].values
@@ -235,22 +267,52 @@ class EnhancedNumericalFeatures:
         self.logger.info("Adding sector features...")
         
         df = stock_df.copy()
-        sector_df.index = pd.to_datetime(sector_df.index)
+        
+        # Ensure Date column is timezone-naive
+        df['Date'] = pd.to_datetime(df['Date'])
+        if hasattr(df['Date'].dtype, 'tz') and df['Date'].dt.tz is not None:
+            df['Date'] = df['Date'].dt.tz_localize(None)
+        
+        sector = sector_df.copy()
+        
+        # Flatten multi-level columns if present
+        if isinstance(sector.columns, pd.MultiIndex):
+            sector.columns = sector.columns.get_level_values(0)
+        
+        sector.index = pd.to_datetime(sector.index)
+        
+        # Remove timezone info if present
+        if sector.index.tz is not None:
+            sector.index = sector.index.tz_localize(None)
         
         # Merge on dates
-        merged = df.set_index('Date').join(sector_df, how='left')
+        merged = df.set_index('Date').join(sector, how='left')
         
-        # Sector returns
-        df['sector_returns'] = merged['Sector_Returns'].values
+        # Check if expected columns exist
+        if 'Returns' in merged.columns:
+            # Sector returns
+            sector_returns_col = 'Sector_Returns' if 'Sector_Returns' in merged.columns else 'Returns'
+            if sector_returns_col in merged.columns:
+                df['sector_returns'] = merged[sector_returns_col].values
+            
+            # Sector correlation (use stock returns if available)
+            if 'Returns' in df.columns and 'Returns' in merged.columns:
+                stock_returns = merged['Returns']
+                sector_returns = merged[sector_returns_col]
+                df['sector_correlation'] = stock_returns.rolling(window=window).corr(sector_returns).values
+            
+            # Relative strength to sector
+            sector_close_col = 'Sector_Close' if 'Sector_Close' in merged.columns else 'Close'
+            if sector_close_col in merged.columns and 'Close' in merged.columns:
+                # Use merged Close (from stock) and sector Close
+                rel_strength = merged['Close'] / merged[sector_close_col]
+                df['rel_strength_sector'] = rel_strength.values
+                df['rel_strength_change'] = rel_strength.pct_change().values
+            
+            self.logger.info("✅ Added sector features")
+        else:
+            self.logger.warning("Sector data missing expected columns")
         
-        # Sector correlation
-        df['sector_correlation'] = merged['Returns'].rolling(window=window).corr(merged['Sector_Returns']).values
-        
-        # Relative strength to sector
-        df['rel_strength_sector'] = (df['Close'] / merged['Sector_Close']).values
-        df['rel_strength_change'] = df['rel_strength_sector'].pct_change()
-        
-        self.logger.info("✅ Added sector features")
         return df
     
     def add_macro_features(
@@ -271,12 +333,27 @@ class EnhancedNumericalFeatures:
         self.logger.info("Adding macroeconomic features...")
         
         df = stock_df.copy()
+        
+        # Ensure Date column is timezone-naive
+        df['Date'] = pd.to_datetime(df['Date'])
+        if hasattr(df['Date'].dtype, 'tz') and df['Date'].dt.tz is not None:
+            df['Date'] = df['Date'].dt.tz_localize(None)
+        
         df_indexed = df.set_index('Date')
         
         # 10-Year Treasury Yield
         if 'treasury_10y' in macro_data and not macro_data['treasury_10y'].empty:
             treasury = macro_data['treasury_10y'].copy()
+            
+            # Flatten multi-level columns if present
+            if isinstance(treasury.columns, pd.MultiIndex):
+                treasury.columns = treasury.columns.get_level_values(0)
+            
             treasury.index = pd.to_datetime(treasury.index)
+            
+            # Remove timezone info if present
+            if treasury.index.tz is not None:
+                treasury.index = treasury.index.tz_localize(None)
             
             merged = df_indexed.join(treasury, how='left', rsuffix='_treasury')
             df['treasury_10y'] = merged['Close_treasury'].ffill().values
@@ -290,7 +367,16 @@ class EnhancedNumericalFeatures:
         # US Dollar Index
         if 'dxy' in macro_data and not macro_data['dxy'].empty:
             dxy = macro_data['dxy'].copy()
+            
+            # Flatten multi-level columns if present
+            if isinstance(dxy.columns, pd.MultiIndex):
+                dxy.columns = dxy.columns.get_level_values(0)
+            
             dxy.index = pd.to_datetime(dxy.index)
+            
+            # Remove timezone info if present
+            if dxy.index.tz is not None:
+                dxy.index = dxy.index.tz_localize(None)
             
             merged = df_indexed.join(dxy, how='left', rsuffix='_dxy')
             df['dollar_index'] = merged['Close_dxy'].ffill().values
@@ -302,7 +388,16 @@ class EnhancedNumericalFeatures:
         # Fed Funds proxy
         if 'fed_funds' in macro_data and not macro_data['fed_funds'].empty:
             fed = macro_data['fed_funds'].copy()
+            
+            # Flatten multi-level columns if present
+            if isinstance(fed.columns, pd.MultiIndex):
+                fed.columns = fed.columns.get_level_values(0)
+            
             fed.index = pd.to_datetime(fed.index)
+            
+            # Remove timezone info if present
+            if fed.index.tz is not None:
+                fed.index = fed.index.tz_localize(None)
             
             merged = df_indexed.join(fed, how='left', rsuffix='_fed')
             df['fed_funds_rate'] = merged['Close_fed'].ffill().values
@@ -336,6 +431,12 @@ class EnhancedNumericalFeatures:
         self.logger.info(f"Adding competitor features for {len(competitor_data)} companies...")
         
         df = stock_df.copy()
+        
+        # Ensure Date column is timezone-naive
+        df['Date'] = pd.to_datetime(df['Date'])
+        if hasattr(df['Date'].dtype, 'tz') and df['Date'].dt.tz is not None:
+            df['Date'] = df['Date'].dt.tz_localize(None)
+        
         df_indexed = df.set_index('Date')
         
         # Collect all competitor returns
@@ -343,17 +444,49 @@ class EnhancedNumericalFeatures:
         comp_names = []
         
         for comp_name, comp_df in competitor_data.items():
-            comp_df['Date'] = pd.to_datetime(comp_df['Date'])
-            comp_df_indexed = comp_df.set_index('Date')
-            
-            merged = df_indexed.join(comp_df_indexed[[f'{comp_name}_Returns']], how='left')
-            comp_returns = merged[f'{comp_name}_Returns'].ffill()
-            
-            comp_returns_list.append(comp_returns)
-            comp_names.append(comp_name)
-            
-            # Individual correlation
-            df[f'corr_{comp_name}'] = df_indexed['Returns'].rolling(window=window).corr(comp_returns).values
+            try:
+                comp = comp_df.copy()
+                
+                # Flatten multi-level columns if present
+                if isinstance(comp.columns, pd.MultiIndex):
+                    comp.columns = comp.columns.get_level_values(0)
+                
+                # Ensure Date column exists
+                if 'Date' not in comp.columns:
+                    comp = comp.reset_index()
+                
+                comp['Date'] = pd.to_datetime(comp['Date'])
+                comp_indexed = comp.set_index('Date')
+                
+                # Remove timezone info if present
+                if comp_indexed.index.tz is not None:
+                    comp_indexed.index = comp_indexed.index.tz_localize(None)
+                
+                # Look for Returns column (might be named differently)
+                returns_col = None
+                for col in comp_indexed.columns:
+                    if 'return' in col.lower():
+                        returns_col = col
+                        break
+                
+                if returns_col is None and 'Close' in comp_indexed.columns:
+                    # Calculate returns if not present
+                    comp_indexed['Returns'] = comp_indexed['Close'].pct_change()
+                    returns_col = 'Returns'
+                
+                if returns_col:
+                    merged = df_indexed.join(comp_indexed[[returns_col]], how='left', rsuffix=f'_{comp_name}')
+                    comp_returns = merged[f'{returns_col}_{comp_name}'].ffill()
+                    
+                    comp_returns_list.append(comp_returns)
+                    comp_names.append(comp_name)
+                    
+                    # Individual correlation
+                    if 'Returns' in df_indexed.columns:
+                        df[f'corr_{comp_name[:10]}'] = df_indexed['Returns'].rolling(window=window).corr(comp_returns).values
+            except Exception as e:
+                self.logger.warning(f"Failed to process competitor {comp_name}: {e}")
+                continue
         
         if comp_returns_list:
             # Average competitor return

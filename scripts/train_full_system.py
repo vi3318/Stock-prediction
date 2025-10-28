@@ -147,8 +147,18 @@ class FullTrainingPipeline:
         stock_df = result['stock_data']['stock']
         news_df = result['news_data']['main']
         
+        # Store additional data for feature engineering
+        market_data = result['stock_data'].get('market', {})
+        sector_df = result['stock_data'].get('sector', None)
+        macro_data = result['stock_data'].get('macro', {})
+        competitor_data = result['stock_data'].get('competitors', {})
+        
         logger.info(f"Stock data collected: {len(stock_df)} rows")
         logger.info(f"News data collected: {len(news_df)} rows")
+        logger.info(f"Market data: {len(market_data)} datasets")
+        logger.info(f"Sector data: {'Yes' if sector_df is not None else 'No'}")
+        logger.info(f"Macro data: {len(macro_data)} datasets")
+        logger.info(f"Competitor data: {len(competitor_data)} stocks")
         
         # Save raw data
         stock_df.to_csv(self.output_dir / 'stock_data.csv', index=False)
@@ -169,6 +179,11 @@ class FullTrainingPipeline:
 
         self.stock_df = stock_df
         self.news_df = news_df
+        # Store additional data for feature engineering
+        self.market_data = market_data
+        self.sector_df = sector_df
+        self.macro_data = macro_data
+        self.competitor_data = competitor_data
         
         logger.info("✅ Data collection complete\n")
         
@@ -187,17 +202,22 @@ class FullTrainingPipeline:
         feature_engineer = EnhancedNumericalFeatures()
         
         logger.info("Creating enhanced numerical features...")
-        features_df = feature_engineer.create_all_features(self.stock_df)
+        logger.info(f"  - Stock data: {len(self.stock_df)} rows")
+        logger.info(f"  - Market data available: {len(self.market_data)} datasets")
+        logger.info(f"  - Sector data available: {'Yes' if self.sector_df is not None else 'No'}")
+        logger.info(f"  - Macro data available: {len(self.macro_data)} datasets")
+        logger.info(f"  - Competitor data available: {len(self.competitor_data)} stocks")
         
-        logger.info(f"Total features created: {len(features_df.columns)}")
-        logger.info(f"Feature categories:")
-        logger.info(f"  - Basic OHLCV: 5")
-        logger.info(f"  - Returns & Momentum: ~15")
-        logger.info(f"  - Volatility: ~10")
-        logger.info(f"  - Technical Indicators: ~20")
-        logger.info(f"  - Market Context: ~15")
-        logger.info(f"  - Statistical: ~10")
-        logger.info(f"  - Cross-asset Correlations: ~10")
+        features_df = feature_engineer.create_all_features(
+            stock_df=self.stock_df,
+            market_data=self.market_data,
+            sector_df=self.sector_df,
+            macro_data=self.macro_data,
+            competitor_data=self.competitor_data
+        )
+        
+        logger.info(f"\n🎯 Total features created: {len(features_df.columns)}")
+        logger.info(f"   Target range: 80-100+ features")
         logger.info(f"  - Regime Indicators: ~10")
         
         # Save features
@@ -729,6 +749,13 @@ For usage instructions, see `QUICKSTART.md` and `ENHANCED_SYSTEM_USAGE.md`.
                 logger.info("Step 1: Skipped (loading from saved data)")
                 self.stock_df = pd.read_csv(self.output_dir / 'stock_data.csv')
                 self.news_df = pd.read_csv(self.output_dir / 'news_data.csv')
+                # Initialize empty data for feature engineering (not critical for checkpoint resume)
+                self.market_data = {}
+                self.sector_df = None
+                self.macro_data = {}
+                self.competitor_data = {}
+                logger.warning("Market/sector/macro/competitor data not loaded (not saved in checkpoint)")
+                logger.warning("If you need full feature engineering, please run from step 1")
             
             # Step 2: Create features
             if start_from_step <= 2:

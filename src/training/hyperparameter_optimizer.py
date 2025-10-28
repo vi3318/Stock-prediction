@@ -191,7 +191,10 @@ class HyperparameterOptimizer:
                 
                 # Forward pass
                 if self.model_type == 'hybrid':
-                    outputs, _ = model(batch_X)
+                    outputs = model(batch_X)
+                    # Handle both old (outputs, attn) and new (outputs only) return formats
+                    if isinstance(outputs, tuple):
+                        outputs = outputs[0]
                 else:
                     outputs = model(batch_X)
                 
@@ -218,7 +221,10 @@ class HyperparameterOptimizer:
                     batch_y = batch_y.to(self.device)
                     
                     if self.model_type == 'hybrid':
-                        outputs, _ = model(batch_X)
+                        outputs = model(batch_X)
+                        # Handle both old (outputs, attn) and new (outputs only) return formats
+                        if isinstance(outputs, tuple):
+                            outputs = outputs[0]
                     else:
                         outputs = model(batch_X)
                     
