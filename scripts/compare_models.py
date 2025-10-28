@@ -18,7 +18,7 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support, con
 import json
 import logging
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -54,9 +54,11 @@ class ModelComparator:
     
     def train_baseline_sklearn(
         self,
-        X_train: np.ndarray,
+        X_text_train: Optional[np.ndarray],
+        X_num_train: np.ndarray,
         y_train: np.ndarray,
-        X_val: np.ndarray,
+        X_text_val: Optional[np.ndarray],
+        X_num_val: np.ndarray,
         y_val: np.ndarray,
         model_type: str = 'random_forest'
     ) -> Dict:
@@ -64,9 +66,11 @@ class ModelComparator:
         Train baseline sklearn model
         
         Args:
-            X_train: Training features [n_samples, seq_len, num_features]
+            X_text_train: Training text embeddings [n_samples, seq_len, 768] (not used by sklearn)
+            X_num_train: Training numerical features [n_samples, seq_len, num_features]
             y_train: Training labels
-            X_val: Validation features
+            X_text_val: Validation text embeddings (not used by sklearn)
+            X_num_val: Validation numerical features
             y_val: Validation labels
             model_type: 'random_forest' or 'logistic_regression'
         
@@ -75,9 +79,9 @@ class ModelComparator:
         """
         logger.info(f"\nTraining baseline {model_type}...")
         
-        # Flatten sequences to 2D for sklearn
-        X_train_flat = X_train.reshape(X_train.shape[0], -1)
-        X_val_flat = X_val.reshape(X_val.shape[0], -1)
+        # Flatten numerical sequences to 2D for sklearn (ignore text)
+        X_train_flat = X_num_train.reshape(X_num_train.shape[0], -1)
+        X_val_flat = X_num_val.reshape(X_num_val.shape[0], -1)
         
         # Train model
         if model_type == 'random_forest':
@@ -110,9 +114,11 @@ class ModelComparator:
     
     def train_baseline_lstm(
         self,
-        X_train: np.ndarray,
+        X_text_train: Optional[np.ndarray],
+        X_num_train: np.ndarray,
         y_train: np.ndarray,
-        X_val: np.ndarray,
+        X_text_val: Optional[np.ndarray],
+        X_num_val: np.ndarray,
         y_val: np.ndarray,
         epochs: int = 30
     ) -> Dict:
@@ -120,9 +126,11 @@ class ModelComparator:
         Train baseline LSTM model
         
         Args:
-            X_train: Training features
+            X_text_train: Training text embeddings (not used for baseline)
+            X_num_train: Training numerical features
             y_train: Training labels
-            X_val: Validation features
+            X_text_val: Validation text embeddings (not used for baseline)
+            X_num_val: Validation numerical features
             y_val: Validation labels
             epochs: Number of training epochs
         
@@ -130,10 +138,11 @@ class ModelComparator:
             metrics: Evaluation metrics
         """
         logger.info("\nTraining baseline LSTM...")
+        print("Note: FinBERT disabled for baseline (use numerical features only)")
         
-        num_features = X_train.shape[2]
+        num_features = X_num_train.shape[2]
         
-        # Create model
+        # Create model (no FinBERT)
         model = create_model(
             model_type='baseline',
             num_features=num_features,
@@ -149,9 +158,15 @@ class ModelComparator:
             output_dir=str(self.output_dir / 'baseline_lstm')
         )
         
-        # Create data loaders
+        # Create data loaders (numerical only, no text)
         train_loader, val_loader = trainer.create_dataloaders(
-            X_train, y_train, X_val, y_val, batch_size=32
+            X_num_train=X_num_train,
+            y_train=y_train,
+            X_num_val=X_num_val,
+            y_val=y_val,
+            X_text_train=None,  # No text for baseline
+            X_text_val=None,
+            batch_size=32
         )
         
         # Train
@@ -176,9 +191,11 @@ class ModelComparator:
     def train_enhanced_model(
         self,
         model_type: str,
-        X_train: np.ndarray,
+        X_text_train: Optional[np.ndarray],
+        X_num_train: np.ndarray,
         y_train: np.ndarray,
-        X_val: np.ndarray,
+        X_text_val: Optional[np.ndarray],
+        X_num_val: np.ndarray,
         y_val: np.ndarray,
         epochs: int = 50,
         use_finbert: bool = True,
@@ -189,9 +206,11 @@ class ModelComparator:
         
         Args:
             model_type: 'bilstm', 'transformer', or 'hybrid'
-            X_train: Training features
+            X_text_train: Training text embeddings
+            X_num_train: Training numerical features
             y_train: Training labels
-            X_val: Validation features
+            X_text_val: Validation text embeddings
+            X_num_val: Validation numerical features
             y_val: Validation labels
             epochs: Number of training epochs
             use_finbert: Whether to use FinBERT embeddings
@@ -202,7 +221,12 @@ class ModelComparator:
         """
         logger.info(f"\nTraining enhanced {model_type} model...")
         
-        num_features = X_train.shape[2]
+        # If text embeddings not available, disable FinBERT
+        if X_text_train is None:
+            use_finbert = False
+            logger.info(f"FinBERT disabled for {model_type} (no text embeddings available)")
+        
+        num_features = X_num_train.shape[2]
         
         # Default hyperparameters (can be overridden)
         default_params = {
@@ -228,6 +252,12 @@ class ModelComparator:
         # Merge with user params
         model_params = {**default_params, **model_kwargs}
         
+        # Print FinBERT status
+        if use_finbert and model_type == 'hybrid':
+            print(f"Loading FinBERT for HybridModel...")
+        else:
+            print(f"FinBERT disabled for {model_type}Model (use_finbert=False)")
+        
         # Create model
         model = create_model(
             model_type=model_type,
@@ -242,9 +272,15 @@ class ModelComparator:
             output_dir=str(self.output_dir / f'enhanced_{model_type}')
         )
         
-        # Create data loaders
+        # Create data loaders with both text and numerical features
         train_loader, val_loader = trainer.create_dataloaders(
-            X_train, y_train, X_val, y_val, batch_size=32
+            X_num_train=X_num_train,
+            y_train=y_train,
+            X_num_val=X_num_val,
+            y_val=y_val,
+            X_text_train=X_text_train if use_finbert else None,
+            X_text_val=X_text_val if use_finbert else None,
+            batch_size=32
         )
         
         # Train
@@ -296,9 +332,11 @@ class ModelComparator:
     
     def run_full_comparison(
         self,
-        X_train: np.ndarray,
+        X_text_train: Optional[np.ndarray],
+        X_num_train: np.ndarray,
         y_train: np.ndarray,
-        X_val: np.ndarray,
+        X_text_val: Optional[np.ndarray],
+        X_num_val: np.ndarray,
         y_val: np.ndarray,
         baseline_epochs: int = 30,
         enhanced_epochs: int = 50,
@@ -309,9 +347,11 @@ class ModelComparator:
         Run full comparison of all models
         
         Args:
-            X_train: Training features
+            X_text_train: Training text embeddings [n_samples, seq_len, 768]
+            X_num_train: Training numerical features [n_samples, seq_len, num_features]
             y_train: Training labels
-            X_val: Validation features
+            X_text_val: Validation text embeddings
+            X_num_val: Validation numerical features
             y_val: Validation labels
             baseline_epochs: Epochs for baseline models
             enhanced_epochs: Epochs for enhanced models
@@ -325,25 +365,35 @@ class ModelComparator:
         # Train baseline models
         if use_sklearn_baselines:
             self.results['random_forest'] = self.train_baseline_sklearn(
-                X_train, y_train, X_val, y_val, 'random_forest'
+                X_text_train, X_num_train, y_train,
+                X_text_val, X_num_val, y_val,
+                'random_forest'
             )
             
             self.results['logistic_regression'] = self.train_baseline_sklearn(
-                X_train, y_train, X_val, y_val, 'logistic_regression'
+                X_text_train, X_num_train, y_train,
+                X_text_val, X_num_val, y_val,
+                'logistic_regression'
             )
         
         # Train baseline LSTM
         self.results['baseline_lstm'] = self.train_baseline_lstm(
-            X_train, y_train, X_val, y_val, epochs=baseline_epochs
+            X_text_train, X_num_train, y_train,
+            X_text_val, X_num_val, y_val,
+            epochs=baseline_epochs
         )
         
         # Train enhanced models
         for model_type in enhanced_models:
+            # Use FinBERT only for hybrid model if text embeddings available
+            use_finbert = (model_type == 'hybrid' and X_text_train is not None)
+            
             self.results[f'enhanced_{model_type}'] = self.train_enhanced_model(
                 model_type,
-                X_train, y_train, X_val, y_val,
+                X_text_train, X_num_train, y_train,
+                X_text_val, X_num_val, y_val,
                 epochs=enhanced_epochs,
-                use_finbert=(model_type == 'hybrid')  # Use FinBERT only for hybrid
+                use_finbert=use_finbert
             )
         
         # Generate comparison report
@@ -549,9 +599,11 @@ class ModelComparator:
 
 
 def quick_comparison(
-    X_train: np.ndarray,
+    X_text_train: Optional[np.ndarray],
+    X_num_train: np.ndarray,
     y_train: np.ndarray,
-    X_val: np.ndarray,
+    X_text_val: Optional[np.ndarray],
+    X_num_val: np.ndarray,
     y_val: np.ndarray,
     output_dir: str = 'results/quick_comparison'
 ):
@@ -559,16 +611,19 @@ def quick_comparison(
     Quick comparison with shorter training
     
     Args:
-        X_train: Training features [n_samples, seq_len, num_features]
+        X_text_train: Training text embeddings [n_samples, seq_len, 768]
+        X_num_train: Training numerical features [n_samples, seq_len, num_features]
         y_train: Training labels
-        X_val: Validation features
+        X_text_val: Validation text embeddings
+        X_num_val: Validation numerical features
         y_val: Validation labels
         output_dir: Output directory
     """
     comparator = ModelComparator(output_dir)
     
     comparator.run_full_comparison(
-        X_train, y_train, X_val, y_val,
+        X_text_train, X_num_train, y_train,
+        X_text_val, X_num_val, y_val,
         baseline_epochs=10,
         enhanced_epochs=15,
         use_sklearn_baselines=True,
@@ -588,15 +643,18 @@ if __name__ == "__main__":
     seq_len = 60
     num_features = 50
     
-    X_train = np.random.randn(n_train, seq_len, num_features).astype(np.float32)
+    X_num_train = np.random.randn(n_train, seq_len, num_features).astype(np.float32)
+    X_text_train = None  # No text embeddings for test
     y_train = np.random.randint(0, 2, n_train)
-    X_val = np.random.randn(n_val, seq_len, num_features).astype(np.float32)
+    X_num_val = np.random.randn(n_val, seq_len, num_features).astype(np.float32)
+    X_text_val = None
     y_val = np.random.randint(0, 2, n_val)
     
     # Run quick comparison
     print("\nRunning quick comparison (short epochs for testing)...")
     results = quick_comparison(
-        X_train, y_train, X_val, y_val,
+        X_text_train, X_num_train, y_train,
+        X_text_val, X_num_val, y_val,
         output_dir='results/test_comparison'
     )
     

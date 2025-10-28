@@ -63,6 +63,9 @@ class FullTrainingPipeline:
         
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         
+        # Checkpoint file
+        self.checkpoint_file = self.output_dir / 'pipeline_checkpoint.json'
+        
         logger.info(f"\n{'='*80}")
         logger.info("FULL TRAINING PIPELINE INITIALIZED")
         logger.info(f"{'='*80}")
@@ -72,6 +75,59 @@ class FullTrainingPipeline:
         logger.info(f"Device: {self.device}")
         logger.info(f"Output Directory: {output_dir}")
         logger.info(f"{'='*80}\n")
+    
+    def save_checkpoint(self, step: int, step_name: str):
+        """Save pipeline checkpoint"""
+        checkpoint = {
+            'completed_step': step,
+            'step_name': step_name,
+            'ticker': self.ticker,
+            'days': self.days,
+            'sequence_length': self.sequence_length,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Save specific data based on completed step
+        if step >= 3:
+            checkpoint['num_features'] = self.num_features
+            checkpoint['train_samples'] = len(self.X_num_train)
+            checkpoint['val_samples'] = len(self.X_num_val)
+            checkpoint['test_samples'] = len(self.X_num_test)
+        
+        if step >= 4 and hasattr(self, 'comparison_results'):
+            checkpoint['comparison_complete'] = True
+        
+        if step >= 5 and hasattr(self, 'best_params'):
+            checkpoint['best_params'] = self.best_params
+            checkpoint['best_model_type'] = self.best_model_type
+        
+        with open(self.checkpoint_file, 'w') as f:
+            json.dump(checkpoint, f, indent=2)
+        
+        logger.info(f"✅ Checkpoint saved: Step {step} ({step_name}) complete")
+    
+    def load_checkpoint(self):
+        """Load pipeline checkpoint if exists"""
+        if not self.checkpoint_file.exists():
+            return None
+        
+        with open(self.checkpoint_file, 'r') as f:
+            checkpoint = json.load(f)
+        
+        logger.info(f"\n{'='*80}")
+        logger.info("CHECKPOINT FOUND")
+        logger.info(f"{'='*80}")
+        logger.info(f"Last completed step: {checkpoint['completed_step']} - {checkpoint['step_name']}")
+        logger.info(f"Timestamp: {checkpoint['timestamp']}")
+        logger.info(f"{'='*80}\n")
+        
+        return checkpoint
+    
+    def clear_checkpoint(self):
+        """Clear checkpoint file"""
+        if self.checkpoint_file.exists():
+            self.checkpoint_file.unlink()
+            logger.info("Checkpoint cleared")
     
     def step1_collect_data(self):
         """Step 1: Collect 1000 days of data"""
@@ -116,6 +172,9 @@ class FullTrainingPipeline:
         
         logger.info("✅ Data collection complete\n")
         
+        # Save checkpoint
+        self.save_checkpoint(1, "Data Collection")
+        
         return stock_df, news_df
     
     def step2_create_features(self):
@@ -148,6 +207,9 @@ class FullTrainingPipeline:
         
         logger.info("✅ Feature engineering complete\n")
         
+        # Save checkpoint
+        self.save_checkpoint(2, "Feature Engineering")
+        
         return features_df
     
     def step3_create_sequences(self):
@@ -177,49 +239,88 @@ class FullTrainingPipeline:
         
         logger.info(f"Feature columns: {len(feature_cols)}")
         
-        # Create sequences
-        X = []
+        # Create separate numerical and text sequences
+        X_num = []  # Numerical features only
+        X_text = []  # Text embeddings (if available)
         y = []
         
+        # Check if news data with embeddings is available
+        has_text_embeddings = hasattr(self, 'news_df') and 'embedding' in self.news_df.columns
+        
         for i in range(len(clean_df) - self.sequence_length):
-            X.append(clean_df[feature_cols].iloc[i:i+self.sequence_length].values)
+            # Numerical features
+            X_num.append(clean_df[feature_cols].iloc[i:i+self.sequence_length].values)
+            
+            # Text embeddings (default to zeros if not available)
+            if has_text_embeddings:
+                # TODO: Align news embeddings with stock dates for this sequence
+                # For now, use zero embeddings as placeholder
+                X_text.append(np.zeros((self.sequence_length, 768), dtype=np.float32))
+            
             y.append(clean_df['target'].iloc[i+self.sequence_length])
         
-        X = np.array(X, dtype=np.float32)
+        X_num = np.array(X_num, dtype=np.float32)
+        X_text = np.array(X_text, dtype=np.float32) if has_text_embeddings else None
         y = np.array(y, dtype=np.int64)
         
-        logger.info(f"Sequences created: {len(X)}")
-        logger.info(f"Sequence shape: {X.shape}")
+        logger.info(f"Sequences created: {len(X_num)}")
+        logger.info(f"Numerical sequence shape: {X_num.shape}")
+        if X_text is not None:
+            logger.info(f"Text embedding sequence shape: {X_text.shape}")
         logger.info(f"Labels shape: {y.shape}")
         logger.info(f"Positive class ratio: {y.mean():.3f}")
         
         # Train/val/test split (70/15/15)
-        n_train = int(len(X) * 0.70)
-        n_val = int(len(X) * 0.15)
+        n_train = int(len(X_num) * 0.70)
+        n_val = int(len(X_num) * 0.15)
         
-        X_train = X[:n_train]
+        # Split numerical features
+        X_num_train = X_num[:n_train]
+        X_num_val = X_num[n_train:n_train+n_val]
+        X_num_test = X_num[n_train+n_val:]
+        
+        # Split text features (if available)
+        if X_text is not None:
+            X_text_train = X_text[:n_train]
+            X_text_val = X_text[n_train:n_train+n_val]
+            X_text_test = X_text[n_train+n_val:]
+        else:
+            X_text_train = None
+            X_text_val = None
+            X_text_test = None
+        
+        # Split labels
         y_train = y[:n_train]
-        X_val = X[n_train:n_train+n_val]
         y_val = y[n_train:n_train+n_val]
-        X_test = X[n_train+n_val:]
         y_test = y[n_train+n_val:]
         
         logger.info(f"\nData split:")
-        logger.info(f"  Train: {len(X_train)} samples")
-        logger.info(f"  Val:   {len(X_val)} samples")
-        logger.info(f"  Test:  {len(X_test)} samples")
+        logger.info(f"  Train: {len(X_num_train)} samples")
+        logger.info(f"  Val:   {len(X_num_val)} samples")
+        logger.info(f"  Test:  {len(X_num_test)} samples")
         
-        self.X_train = X_train
+        # Store separate arrays
+        self.X_num_train = X_num_train
+        self.X_text_train = X_text_train
         self.y_train = y_train
-        self.X_val = X_val
+        
+        self.X_num_val = X_num_val
+        self.X_text_val = X_text_val
         self.y_val = y_val
-        self.X_test = X_test
+        
+        self.X_num_test = X_num_test
+        self.X_text_test = X_text_test
         self.y_test = y_test
-        self.num_features = X_train.shape[2]
+        
+        # Store only numerical feature count
+        self.num_features = X_num_train.shape[2]
         
         logger.info("✅ Sequence creation complete\n")
         
-        return X_train, y_train, X_val, y_val, X_test, y_test
+        # Save checkpoint
+        self.save_checkpoint(3, "Sequence Creation")
+        
+        return X_num_train, X_text_train, y_train, X_num_val, X_text_val, y_val, X_num_test, X_text_test, y_test
     
     def step4_run_comparison(self):
         """Step 4: Run baseline vs enhanced comparison"""
@@ -231,12 +332,14 @@ class FullTrainingPipeline:
             output_dir=str(self.output_dir / 'comparison')
         )
         
-        # Run comparison (without transformer for speed)
+        # Run comparison with separate text and numerical arrays
         comparator.run_full_comparison(
-            self.X_train,
-            self.y_train,
-            self.X_val,
-            self.y_val,
+            X_text_train=self.X_text_train,
+            X_num_train=self.X_num_train,
+            y_train=self.y_train,
+            X_text_val=self.X_text_val,
+            X_num_val=self.X_num_val,
+            y_val=self.y_val,
             baseline_epochs=30,
             enhanced_epochs=50,
             use_sklearn_baselines=True,
@@ -246,6 +349,9 @@ class FullTrainingPipeline:
         self.comparison_results = comparator.results
         
         logger.info("✅ Model comparison complete\n")
+        
+        # Save checkpoint
+        self.save_checkpoint(4, "Model Comparison")
         
         return comparator.results
     
@@ -288,19 +394,20 @@ class FullTrainingPipeline:
             study_name=f'{self.ticker}_{best_model_name}_optimization'
         )
         
-        # Set data
+        # Set data (use numerical features only for optimization)
+        # TODO: Update HyperparameterOptimizer to support separate text/numerical arrays
         optimizer.set_data(
-            self.X_train,
+            self.X_num_train,
             self.y_train,
-            self.X_val,
+            self.X_num_val,
             self.y_val
         )
         
         # Run optimization
         best_params = optimizer.optimize(n_trials=n_trials)
         
-        # Save results
-        optimizer.save_results(str(self.output_dir / 'optimization'))
+        # Results are automatically saved by optimizer.optimize()
+        # No need to call save_results again
         
         self.best_params = best_params
         self.best_model_type = best_model_name
@@ -310,6 +417,9 @@ class FullTrainingPipeline:
             logger.info(f"  {key}: {value}")
         
         logger.info("✅ Hyperparameter optimization complete\n")
+        
+        # Save checkpoint
+        self.save_checkpoint(5, "Hyperparameter Optimization")
         
         return best_params
     
@@ -336,6 +446,12 @@ class FullTrainingPipeline:
         model_type = getattr(self, 'best_model_type', 'hybrid')
         logger.info(f"Training final {model_type} model with optimized parameters...")
         
+        # Add use_finbert flag based on model type
+        if model_type == 'hybrid' and self.X_text_train is not None:
+            model_params['use_finbert'] = True
+        else:
+            model_params['use_finbert'] = False
+        
         # Create optimized model
         model = create_model(
             model_type=model_type,
@@ -350,12 +466,14 @@ class FullTrainingPipeline:
             output_dir=str(self.output_dir / 'final_model')
         )
         
-        # Create data loaders
+        # Create data loaders with separate arrays
         train_loader, val_loader = trainer.create_dataloaders(
-            self.X_train,
-            self.y_train,
-            self.X_val,
-            self.y_val,
+            X_num_train=self.X_num_train,
+            y_train=self.y_train,
+            X_num_val=self.X_num_val,
+            y_val=self.y_val,
+            X_text_train=self.X_text_train,
+            X_text_val=self.X_text_val,
             batch_size=trainer_params.get('batch_size', 32)
         )
         
@@ -375,6 +493,9 @@ class FullTrainingPipeline:
         
         logger.info("✅ Final model training complete\n")
         
+        # Save checkpoint
+        self.save_checkpoint(6, "Final Model Training")
+        
         return trainer, history
     
     def step7_evaluate_final_model(self):
@@ -383,11 +504,19 @@ class FullTrainingPipeline:
         logger.info("STEP 7: FINAL EVALUATION")
         logger.info("="*80 + "\n")
         
-        # Create test loader
-        test_dataset = torch.utils.data.TensorDataset(
-            torch.FloatTensor(self.X_test),
-            torch.LongTensor(self.y_test)
-        )
+        # Create test loader with separate arrays
+        if self.X_text_test is not None:
+            test_dataset = torch.utils.data.TensorDataset(
+                torch.FloatTensor(self.X_text_test),
+                torch.FloatTensor(self.X_num_test),
+                torch.LongTensor(self.y_test)
+            )
+        else:
+            test_dataset = torch.utils.data.TensorDataset(
+                torch.FloatTensor(self.X_num_test),
+                torch.LongTensor(self.y_test)
+            )
+        
         test_loader = torch.utils.data.DataLoader(
             test_dataset,
             batch_size=32,
@@ -404,6 +533,9 @@ class FullTrainingPipeline:
         
         logger.info("✅ Final evaluation complete\n")
         
+        # Save checkpoint
+        self.save_checkpoint(7, "Final Evaluation")
+        
         return test_metrics
     
     def step8_generate_report(self):
@@ -419,9 +551,10 @@ class FullTrainingPipeline:
                 'total_days': self.days,
                 'sequence_length': self.sequence_length,
                 'num_features': self.num_features,
-                'train_samples': len(self.X_train),
-                'val_samples': len(self.X_val),
-                'test_samples': len(self.X_test)
+                'train_samples': len(self.X_num_train),
+                'val_samples': len(self.X_num_val),
+                'test_samples': len(self.X_num_test),
+                'has_text_embeddings': self.X_text_train is not None
             },
             'model_comparison': {},
             'best_hyperparameters': self.best_params,
@@ -558,60 +691,126 @@ For usage instructions, see `QUICKSTART.md` and `ENHANCED_SYSTEM_USAGE.md`.
             f.write(md_content)
         
         logger.info(f"Markdown report saved: {md_path}")
+        
+        # Save final checkpoint
+        self.save_checkpoint(8, "Report Generation")
     
-    def run_full_pipeline(self, skip_optimization: bool = False, n_trials: int = 50):
+    def run_full_pipeline(self, skip_optimization: bool = False, n_trials: int = 50, start_from_step: int = 1):
         """
         Run complete end-to-end pipeline
         
         Args:
             skip_optimization: Skip hyperparameter optimization (use defaults)
             n_trials: Number of optimization trials
+            start_from_step: Step to start from (1-8, for resuming)
         """
         try:
+            # Check for checkpoint
+            checkpoint = self.load_checkpoint()
+            if checkpoint and start_from_step == 1:
+                logger.info(f"Previous run found. Last completed: Step {checkpoint['completed_step']}")
+                user_input = input("Resume from last checkpoint? (y/n): ").strip().lower()
+                if user_input == 'y':
+                    start_from_step = checkpoint['completed_step'] + 1
+                    logger.info(f"Resuming from step {start_from_step}")
+                    
+                    # Load checkpoint data if resuming
+                    if start_from_step > 5 and 'best_params' in checkpoint:
+                        self.best_params = checkpoint['best_params']
+                        self.best_model_type = checkpoint['best_model_type']
+                else:
+                    logger.info("Starting fresh pipeline")
+                    self.clear_checkpoint()
+            
             # Step 1: Collect data
-            self.step1_collect_data()
+            if start_from_step <= 1:
+                self.step1_collect_data()
+            else:
+                logger.info("Step 1: Skipped (loading from saved data)")
+                self.stock_df = pd.read_csv(self.output_dir / 'stock_data.csv')
+                self.news_df = pd.read_csv(self.output_dir / 'news_data.csv')
             
             # Step 2: Create features
-            self.step2_create_features()
+            if start_from_step <= 2:
+                self.step2_create_features()
+            else:
+                logger.info("Step 2: Skipped (loading from saved features)")
+                self.features_df = pd.read_csv(self.output_dir / 'features.csv')
             
             # Step 3: Create sequences
-            self.step3_create_sequences()
+            if start_from_step <= 3:
+                self.step3_create_sequences()
+            else:
+                logger.info("Step 3: Skipped (would need to reload sequences)")
+                logger.warning("Cannot skip sequence creation - recreating sequences...")
+                self.step3_create_sequences()
             
             # Step 4: Model comparison
-            self.step4_run_comparison()
+            if start_from_step <= 4:
+                self.step4_run_comparison()
+            else:
+                logger.info("Step 4: Skipped (loading comparison results)")
+                try:
+                    import json
+                    with open(self.output_dir / 'comparison' / 'full_results.json', 'r') as f:
+                        self.comparison_results = json.load(f)
+                except FileNotFoundError:
+                    logger.warning("Comparison results not found - running comparison...")
+                    self.step4_run_comparison()
             
             # Step 5: Optimize (optional)
-            if not skip_optimization:
-                self.step5_optimize_best_model(n_trials=n_trials)
+            if start_from_step <= 5:
+                if not skip_optimization:
+                    self.step5_optimize_best_model(n_trials=n_trials)
+                else:
+                    # Use default parameters
+                    self.best_params = {
+                        'hidden_dim': 256,
+                        'num_layers': 3,
+                        'dropout': 0.3,
+                        'learning_rate': 0.0005,
+                        'batch_size': 32,
+                        'grad_clip': 1.0,
+                        'num_heads': 8,
+                        'temporal_decay_init': 0.95
+                    }
+                    self.best_model_type = 'bilstm'  # Default to BiLSTM (simpler than hybrid)
+                    logger.info("Using default hyperparameters (optimization skipped)")
+                    self.save_checkpoint(5, "Hyperparameter Optimization (Skipped)")
             else:
-                # Use default parameters
-                self.best_params = {
-                    'hidden_dim': 256,
-                    'num_layers': 3,
-                    'dropout': 0.3,
-                    'learning_rate': 0.0005,
-                    'batch_size': 32,
-                    'grad_clip': 1.0,
-                    'num_heads': 8,
-                    'temporal_decay_init': 0.95
-                }
-                self.best_model_type = 'bilstm'  # Default to BiLSTM (simpler than hybrid)
-                logger.info("Using default hyperparameters (optimization skipped)")
+                logger.info("Step 5: Skipped (using saved hyperparameters)")
             
             # Step 6: Train final model
-            self.step6_train_final_model()
+            if start_from_step <= 6:
+                self.step6_train_final_model()
+            else:
+                logger.info("Step 6: Skipped (loading trained model)")
+                # Would need to reload model here
+                logger.warning("Cannot skip final model training - retraining...")
+                self.step6_train_final_model()
             
             # Step 7: Evaluate
-            self.step7_evaluate_final_model()
+            if start_from_step <= 7:
+                self.step7_evaluate_final_model()
+            else:
+                logger.info("Step 7: Skipped (loading evaluation results)")
             
             # Step 8: Generate report
-            report = self.step8_generate_report()
+            if start_from_step <= 8:
+                report = self.step8_generate_report()
+            else:
+                logger.info("Step 8: Already completed")
+                report = None
             
             logger.info(f"\n{'='*80}")
             logger.info("FULL PIPELINE COMPLETE!")
             logger.info(f"{'='*80}\n")
             logger.info(f"Results saved to: {self.output_dir}")
-            logger.info(f"Final test accuracy: {self.test_metrics['accuracy']:.4f}")
+            if hasattr(self, 'test_metrics'):
+                logger.info(f"Final test accuracy: {self.test_metrics['accuracy']:.4f}")
+            
+            # Clear checkpoint on successful completion
+            self.clear_checkpoint()
             
             return report
             

@@ -502,8 +502,9 @@ class HybridModel(nn.Module):
         self,
         numerical_features: torch.Tensor,
         text_embeddings: Optional[torch.Tensor] = None,
-        time_deltas: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, dict]:
+        time_deltas: Optional[torch.Tensor] = None,
+        return_metadata: bool = False
+    ) -> torch.Tensor:
         """
         Forward pass
         
@@ -511,10 +512,10 @@ class HybridModel(nn.Module):
             numerical_features: [batch, seq_len, num_features]
             text_embeddings: [batch, seq_len, 768] (optional)
             time_deltas: [batch, seq_len] (optional)
+            return_metadata: Whether to return metadata dict with logits
         
         Returns:
-            logits: [batch, 2]
-            metadata: dict with learned parameters
+            logits: [batch, 2] or (logits, metadata) if return_metadata=True
         """
         features_to_concat = []
         
@@ -559,13 +560,15 @@ class HybridModel(nn.Module):
         # Classification
         logits = self.classifier(combined)
         
-        # Metadata
-        metadata = {
-            'temporal_decay': self.temporal_decay.item(),
-            'recency_scale': self.recency_scale.item()
-        }
-        
-        return logits, metadata
+        if return_metadata:
+            # Metadata
+            metadata = {
+                'temporal_decay': self.temporal_decay.item(),
+                'recency_scale': self.recency_scale.item()
+            }
+            return logits, metadata
+        else:
+            return logits
     
     def get_learned_params(self) -> dict:
         """Get learned temporal parameters"""
@@ -644,15 +647,13 @@ def create_model(
         model: PyTorch model
     """
     model_type = model_type.lower()
-    
-    # Disable FinBERT by default since it's causing failures
-    # Only enable if explicitly requested AND working
     if 'use_finbert' not in kwargs:
         kwargs['use_finbert'] = False
         print(f"Note: FinBERT disabled for {model_type} (use numerical features only)")
     
     if model_type == 'baseline':
-        return SimpleBaselineModel(num_features, **kwargs)
+        baseline_kwargs = {k: v for k, v in kwargs.items() if k in ['hidden_dim', 'num_layers', 'dropout']}
+        return SimpleBaselineModel(num_features, **baseline_kwargs) # Use filtered kwargs
     elif model_type == 'bilstm':
         return BiLSTMModel(num_features, **kwargs)
     elif model_type == 'transformer':
@@ -702,9 +703,11 @@ if __name__ == "__main__":
     # Test Hybrid
     print("\n4. Testing Hybrid Model...")
     hybrid = HybridModel(num_features, use_finbert=False)
-    out, metadata = hybrid(num_data)
+    out = hybrid(num_data)
     print(f"   Output shape: {out.shape}")
     print(f"   Parameters: {sum(p.numel() for p in hybrid.parameters()):,}")
+    # Get metadata separately
+    out_with_meta, metadata = hybrid(num_data, return_metadata=True)
     print(f"   Learned temporal decay: {metadata['temporal_decay']:.4f}")
     print(f"   Learned recency scale: {metadata['recency_scale']:.4f}")
     

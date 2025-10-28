@@ -71,6 +71,9 @@ class EnhancedTrainer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
+        # Tracking whether text features are being used
+        self.has_text_features = False
+        
         # Training history
         self.history = {
             'train_loss': [],
@@ -105,10 +108,12 @@ class EnhancedTrainer:
     
     def create_dataloaders(
         self,
-        X_train: np.ndarray,
+        X_num_train: np.ndarray,
         y_train: np.ndarray,
-        X_val: np.ndarray,
+        X_num_val: np.ndarray,
         y_val: np.ndarray,
+        X_text_train: Optional[np.ndarray] = None,
+        X_text_val: Optional[np.ndarray] = None,
         batch_size: int = 32,
         num_workers: int = 0
     ) -> Tuple[DataLoader, DataLoader]:
@@ -116,25 +121,43 @@ class EnhancedTrainer:
         Create data loaders
         
         Args:
-            X_train: Training features [n_samples, seq_len, num_features]
+            X_num_train: Training numerical features [n_samples, seq_len, num_features]
             y_train: Training labels [n_samples]
-            X_val: Validation features
+            X_num_val: Validation numerical features
             y_val: Validation labels
+            X_text_train: Training text embeddings [n_samples, seq_len, 768] (optional)
+            X_text_val: Validation text embeddings (optional)
             batch_size: Batch size
             num_workers: Number of workers for data loading
         
         Returns:
             train_loader, val_loader
         """
-        # Convert to tensors
-        X_train_t = torch.FloatTensor(X_train)
+        # Convert numerical features to tensors
+        X_num_train_t = torch.FloatTensor(X_num_train)
         y_train_t = torch.LongTensor(y_train)
-        X_val_t = torch.FloatTensor(X_val)
+        X_num_val_t = torch.FloatTensor(X_num_val)
         y_val_t = torch.LongTensor(y_val)
         
-        # Create datasets
-        train_dataset = TensorDataset(X_train_t, y_train_t)
-        val_dataset = TensorDataset(X_val_t, y_val_t)
+        # Create datasets based on whether text embeddings are provided
+        if X_text_train is not None and X_text_val is not None:
+            # Convert text embeddings to tensors
+            X_text_train_t = torch.FloatTensor(X_text_train)
+            X_text_val_t = torch.FloatTensor(X_text_val)
+            
+            # Create datasets with both text and numerical features
+            train_dataset = TensorDataset(X_text_train_t, X_num_train_t, y_train_t)
+            val_dataset = TensorDataset(X_text_val_t, X_num_val_t, y_val_t)
+            
+            self.has_text_features = True
+            self.logger.info("Using both text and numerical features")
+        else:
+            # Create datasets with only numerical features
+            train_dataset = TensorDataset(X_num_train_t, y_train_t)
+            val_dataset = TensorDataset(X_num_val_t, y_val_t)
+            
+            self.has_text_features = False
+            self.logger.info("Using only numerical features")
         
         # Create loaders
         train_loader = DataLoader(
@@ -341,15 +364,37 @@ class EnhancedTrainer:
         all_preds = []
         all_labels = []
         
-        for batch_X, batch_y in train_loader:
-            batch_X = batch_X.to(self.device)
+        for batch_data in train_loader:
+            # Unpack batch based on whether text features are present
+            if self.has_text_features:
+                batch_X_text, batch_X_num, batch_y = batch_data
+                batch_X_text = batch_X_text.to(self.device)
+                batch_X_num = batch_X_num.to(self.device)
+            else:
+                batch_X_num, batch_y = batch_data
+                batch_X_text = None
+                batch_X_num = batch_X_num.to(self.device)
+            
             batch_y = batch_y.to(self.device)
             
             # Forward pass
             optimizer.zero_grad()
             
-            # Handle different model outputs
-            outputs = self.model(batch_X)
+            # Call model with appropriate arguments
+            if self.has_text_features:
+                outputs = self.model(
+                    numerical_features=batch_X_num,
+                    text_embeddings=batch_X_text
+                )
+            else:
+                # Check if model expects keyword arguments or positional
+                try:
+                    outputs = self.model(numerical_features=batch_X_num)
+                except TypeError:
+                    # Fallback for models that don't use keyword arguments (e.g., baseline)
+                    outputs = self.model(batch_X_num)
+            
+            # Handle different model outputs (some models return tuples)
             if isinstance(outputs, tuple):
                 outputs = outputs[0]  # Extract just the logits
             
@@ -385,12 +430,34 @@ class EnhancedTrainer:
         all_probs = []
         
         with torch.no_grad():
-            for batch_X, batch_y in val_loader:
-                batch_X = batch_X.to(self.device)
+            for batch_data in val_loader:
+                # Unpack batch based on whether text features are present
+                if self.has_text_features:
+                    batch_X_text, batch_X_num, batch_y = batch_data
+                    batch_X_text = batch_X_text.to(self.device)
+                    batch_X_num = batch_X_num.to(self.device)
+                else:
+                    batch_X_num, batch_y = batch_data
+                    batch_X_text = None
+                    batch_X_num = batch_X_num.to(self.device)
+                
                 batch_y = batch_y.to(self.device)
                 
                 # Forward pass
-                outputs = self.model(batch_X)
+                if self.has_text_features:
+                    outputs = self.model(
+                        numerical_features=batch_X_num,
+                        text_embeddings=batch_X_text
+                    )
+                else:
+                    # Check if model expects keyword arguments or positional
+                    try:
+                        outputs = self.model(numerical_features=batch_X_num)
+                    except TypeError:
+                        # Fallback for models that don't use keyword arguments (e.g., baseline)
+                        outputs = self.model(batch_X_num)
+                
+                # Handle different model outputs
                 if isinstance(outputs, tuple):
                     outputs = outputs[0]  # Extract just the logits
                 
@@ -439,11 +506,34 @@ class EnhancedTrainer:
         all_probs = []
         
         with torch.no_grad():
-            for batch_X, batch_y in test_loader:
-                batch_X = batch_X.to(self.device)
+            for batch_data in test_loader:
+                # Unpack batch based on whether text features are present
+                if self.has_text_features:
+                    batch_X_text, batch_X_num, batch_y = batch_data
+                    batch_X_text = batch_X_text.to(self.device)
+                    batch_X_num = batch_X_num.to(self.device)
+                else:
+                    batch_X_num, batch_y = batch_data
+                    batch_X_text = None
+                    batch_X_num = batch_X_num.to(self.device)
+                
                 batch_y = batch_y.to(self.device)
                 
-                outputs = self.model(batch_X)
+                # Forward pass
+                if self.has_text_features:
+                    outputs = self.model(
+                        numerical_features=batch_X_num,
+                        text_embeddings=batch_X_text
+                    )
+                else:
+                    # Check if model expects keyword arguments or positional
+                    try:
+                        outputs = self.model(numerical_features=batch_X_num)
+                    except TypeError:
+                        # Fallback for models that don't use keyword arguments (e.g., baseline)
+                        outputs = self.model(batch_X_num)
+                
+                # Handle different model outputs
                 if isinstance(outputs, tuple):
                     outputs = outputs[0]  # Extract just the logits
                 
